@@ -2,6 +2,9 @@ import React, { useState } from 'react';
 import { QueryClient, QueryClientProvider } from 'react-query';
 import Layout from './components/Layout';
 import InstancesList from './components/instances/InstancesList';
+import SecurityGroupsList from './components/securitygroups/SecurityGroupsList';
+import KeyPairsList from './components/keypairs/KeyPairsList';
+import VolumesList from './components/volumes/VolumesList';
 
 const queryClient = new QueryClient();
 
@@ -13,11 +16,11 @@ function App() {
       case 'instances':
         return <InstancesList />;
       case 'security-groups':
-        return <div>Security Groups (Coming Soon)</div>;
+        return <SecurityGroupsList />;
       case 'keypairs':
-        return <div>Key Pairs (Coming Soon)</div>;
+        return <KeyPairsList />;
       case 'volumes':
-        return <div>Volumes (Coming Soon)</div>;
+        return <VolumesList />;
       default:
         return <InstancesList />;
     }

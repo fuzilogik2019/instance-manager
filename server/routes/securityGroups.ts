@@ -15,10 +15,13 @@ router.get('/', async (req, res) => {
       return res.status(400).json({ error: 'Region parameter is required' });
     }
 
+    console.log(`Getting security groups for region: ${region}`);
+
     // Try to get from AWS first, fallback to database
     try {
       const awsService = new AWSService(region as string);
       const awsSecurityGroups = await awsService.getSecurityGroups(region as string);
+      console.log(`Found ${awsSecurityGroups.length} security groups in AWS`);
       res.json(awsSecurityGroups);
     } catch (awsError) {
       console.warn('Failed to get security groups from AWS, using database:', awsError);
@@ -46,8 +49,34 @@ router.get('/', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const { name, description, region, rules } = req.body;
-    const id = uuidv4();
     
+    console.log(`Creating security group: ${name} in region: ${region}`);
+    
+    if (!name || !description || !region) {
+      return res.status(400).json({ error: 'Name, description, and region are required' });
+    }
+    
+    // Try to create in AWS first
+    try {
+      const awsService = new AWSService(region);
+      const awsSecurityGroup = await awsService.createSecurityGroup({
+        name,
+        description,
+        region,
+        rules: rules || []
+      });
+      
+      if (awsSecurityGroup) {
+        console.log(`Security group created in AWS: ${awsSecurityGroup.id}`);
+        res.status(201).json(awsSecurityGroup);
+        return;
+      }
+    } catch (awsError) {
+      console.warn('Failed to create security group in AWS, creating locally:', awsError);
+    }
+    
+    // Fallback to local creation
+    const id = uuidv4();
     await db.runAsync(`
       INSERT INTO security_groups (id, name, description, region, rules)
       VALUES (?, ?, ?, ?, ?)
@@ -59,6 +88,7 @@ router.post('/', async (req, res) => {
       rules: JSON.parse(securityGroup.rules || '[]'),
     };
     
+    console.log(`Security group created locally: ${id}`);
     res.status(201).json(parsedSecurityGroup);
   } catch (error) {
     console.error('Failed to create security group:', error);
@@ -72,6 +102,27 @@ router.put('/:id', async (req, res) => {
     const { id } = req.params;
     const { name, description, rules } = req.body;
     
+    console.log(`Updating security group: ${id}`);
+    
+    // Try to update in AWS first
+    try {
+      const awsService = new AWSService();
+      const awsSecurityGroup = await awsService.updateSecurityGroup(id, {
+        name,
+        description,
+        rules: rules || []
+      });
+      
+      if (awsSecurityGroup) {
+        console.log(`Security group updated in AWS: ${id}`);
+        res.json(awsSecurityGroup);
+        return;
+      }
+    } catch (awsError) {
+      console.warn('Failed to update security group in AWS, updating locally:', awsError);
+    }
+    
+    // Fallback to local update
     await db.runAsync(`
       UPDATE security_groups 
       SET name = ?, description = ?, rules = ?
@@ -89,6 +140,7 @@ router.put('/:id', async (req, res) => {
       rules: JSON.parse(securityGroup.rules || '[]'),
     };
     
+    console.log(`Security group updated locally: ${id}`);
     res.json(parsedSecurityGroup);
   } catch (error) {
     console.error('Failed to update security group:', error);
@@ -100,12 +152,27 @@ router.put('/:id', async (req, res) => {
 router.delete('/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    
+    console.log(`Deleting security group: ${id}`);
+    
+    // Try to delete from AWS first
+    try {
+      const awsService = new AWSService();
+      await awsService.deleteSecurityGroup(id);
+      console.log(`Security group deleted from AWS: ${id}`);
+    } catch (awsError) {
+      console.warn('Failed to delete security group from AWS:', awsError);
+      // Continue with local deletion even if AWS fails
+    }
+    
+    // Delete from database
     const result = await db.runAsync('DELETE FROM security_groups WHERE id = ?', [id]);
     
-    if (result.changes === 0) {
+    if (result && typeof result === 'object' && 'changes' in result && result.changes === 0) {
       return res.status(404).json({ error: 'Security group not found' });
     }
     
+    console.log(`Security group deleted: ${id}`);
     res.json({ message: 'Security group deleted successfully' });
   } catch (error) {
     console.error('Failed to delete security group:', error);

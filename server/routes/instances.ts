@@ -34,6 +34,15 @@ router.post('/', async (req, res) => {
     const instanceId = uuidv4();
     const stackName = `ec2-${instanceId.substring(0, 8)}`;
     
+    console.log('Creating instance with request:', request);
+    
+    // Validate required fields
+    if (!request.name || !request.region || !request.instanceType || !request.keyPairId) {
+      return res.status(400).json({ 
+        error: 'Missing required fields: name, region, instanceType, keyPairId' 
+      });
+    }
+    
     // Store instance in database with pending state
     await db.runAsync(`
       INSERT INTO instances (
@@ -47,16 +56,17 @@ router.post('/', async (req, res) => {
       'pending',
       request.region,
       request.keyPairId,
-      JSON.stringify(request.securityGroupIds),
-      JSON.stringify(request.volumes),
+      JSON.stringify(request.securityGroupIds || []),
+      JSON.stringify(request.volumes || []),
       request.isSpotInstance ? 1 : 0,
-      JSON.stringify(request.tags),
+      JSON.stringify(request.tags || {}),
       stackName
     ]);
     
     // Deploy instance using AWS SDK (async)
     deployInstance(instanceId, request, stackName)
       .then(async (result) => {
+        console.log(`Instance ${instanceId} deployed successfully:`, result);
         // Update instance with AWS instance ID and network details
         await db.runAsync(`
           UPDATE instances 
@@ -65,7 +75,7 @@ router.post('/', async (req, res) => {
         `, ['running', result.publicIp, result.privateIp, result.availabilityZone, result.instanceId, instanceId]);
       })
       .catch(async (error) => {
-        console.error('Failed to deploy instance:', error);
+        console.error(`Failed to deploy instance ${instanceId}:`, error);
         await db.runAsync('UPDATE instances SET state = ? WHERE id = ?', ['terminated', instanceId]);
       });
     
@@ -83,7 +93,7 @@ router.post('/', async (req, res) => {
     res.status(201).json(parsedInstance);
   } catch (error) {
     console.error('Failed to create instance:', error);
-    res.status(500).json({ error: 'Failed to create instance' });
+    res.status(500).json({ error: 'Failed to create instance', details: error.message });
   }
 });
 

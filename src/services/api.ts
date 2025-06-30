@@ -16,6 +16,20 @@ const api = axios.create({
   timeout: 30000,
 });
 
+// Add response interceptor to handle errors better
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.data?.error) {
+      // Create a new error with the server's error message
+      const serverError = new Error(error.response.data.error);
+      serverError.message = error.response.data.error;
+      throw serverError;
+    }
+    throw error;
+  }
+);
+
 // AWS Data
 export const getRegions = async (): Promise<AWSRegion[]> => {
   const response = await api.get('/aws/regions');
@@ -93,6 +107,11 @@ export const deleteKeyPair = async (id: string): Promise<void> => {
 // EBS Volumes
 export const getVolumes = async (region: string): Promise<EBSVolume[]> => {
   const response = await api.get(`/volumes?region=${region}`);
+  return response.data;
+};
+
+export const createVolume = async (volume: Omit<EBSVolume, 'id' | 'createdAt' | 'state'>): Promise<EBSVolume> => {
+  const response = await api.post('/volumes', volume);
   return response.data;
 };
 

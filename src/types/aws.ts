@@ -22,6 +22,11 @@ export interface EBSVolume {
   throughput?: number;
   encrypted: boolean;
   deleteOnTermination: boolean;
+  state?: 'available' | 'in-use' | 'creating' | 'deleting';
+  region?: string;
+  instanceId?: string;
+  device?: string;
+  createdAt?: Date;
 }
 
 export interface SecurityGroupRule {
@@ -73,6 +78,7 @@ export interface InstanceCreationRequest {
   keyPairId: string;
   securityGroupIds: string[];
   volumes: Omit<EBSVolume, 'id'>[];
+  existingVolumeIds?: string[]; // New field for attaching existing volumes
   isSpotInstance: boolean;
   userData?: string;
   tags: Record<string, string>;

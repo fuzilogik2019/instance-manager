@@ -47,7 +47,21 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'Key pair name is required' });
     }
     
-    // Check if name already exists
+    // Try to create in AWS first
+    try {
+      const awsService = new AWSService();
+      const awsKeyPair = await awsService.createKeyPair(name);
+      
+      if (awsKeyPair) {
+        res.status(201).json(awsKeyPair);
+        return;
+      }
+    } catch (awsError) {
+      console.warn('Failed to create key pair in AWS, creating locally:', awsError);
+    }
+    
+    // Fallback to local creation
+    // Check if name already exists in database
     const existing = await db.getAsync('SELECT id FROM key_pairs WHERE name = ?', [name]);
     if (existing) {
       return res.status(409).json({ error: 'Key pair with this name already exists' });
@@ -91,6 +105,20 @@ router.post('/upload', async (req, res) => {
       return res.status(400).json({ error: 'Name and public key are required' });
     }
     
+    // Try to import to AWS first
+    try {
+      const awsService = new AWSService();
+      const awsKeyPair = await awsService.importKeyPair(name, publicKey);
+      
+      if (awsKeyPair) {
+        res.status(201).json(awsKeyPair);
+        return;
+      }
+    } catch (awsError) {
+      console.warn('Failed to import key pair to AWS, storing locally:', awsError);
+    }
+    
+    // Fallback to local storage
     // Check if name already exists
     const existing = await db.getAsync('SELECT id FROM key_pairs WHERE name = ?', [name]);
     if (existing) {
@@ -129,7 +157,17 @@ router.post('/upload', async (req, res) => {
 router.delete('/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await db.runAsync('DELETE FROM key_pairs WHERE id = ?', [id]);
+    
+    // Try to delete from AWS first
+    try {
+      const awsService = new AWSService();
+      await awsService.deleteKeyPair(id);
+    } catch (awsError) {
+      console.warn('Failed to delete key pair from AWS:', awsError);
+    }
+    
+    // Delete from database
+    const result = await db.runAsync('DELETE FROM key_pairs WHERE id = ? OR name = ?', [id, id]);
     
     if (result.changes === 0) {
       return res.status(404).json({ error: 'Key pair not found' });

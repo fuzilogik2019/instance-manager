@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Server, Play, Square, Trash2, RefreshCw, Plus, ExternalLink } from 'lucide-react';
+import { Server, Play, Square, Trash2, RefreshCw, Plus, ExternalLink, AlertTriangle } from 'lucide-react';
 import { EC2Instance } from '../../types/aws';
 import { getInstances, startInstance, stopInstance, terminateInstance } from '../../services/api';
 import Button from '../ui/Button';
@@ -31,24 +31,52 @@ export default function InstancesList() {
   };
 
   const handleStart = async (instanceId: string) => {
+    const instance = instances.find(i => i.id === instanceId);
+    
+    if (instance?.isSpotInstance) {
+      alert('Cannot start Spot instances. Spot instances are terminated when stopped and cannot be restarted. You need to launch a new instance.');
+      return;
+    }
+
     try {
       setActionLoading(instanceId);
       await startInstance(instanceId);
       await loadInstances();
     } catch (error) {
       console.error('Failed to start instance:', error);
+      if (error.message?.includes('Spot')) {
+        alert('Cannot start Spot instances. Spot instances are terminated when stopped and cannot be restarted.');
+      } else {
+        alert('Failed to start instance. Please check the console for details.');
+      }
     } finally {
       setActionLoading(null);
     }
   };
 
   const handleStop = async (instanceId: string) => {
+    const instance = instances.find(i => i.id === instanceId);
+    
+    if (instance?.isSpotInstance) {
+      if (!confirm('Spot instances cannot be stopped - they can only be terminated. This will permanently destroy the instance. Are you sure you want to continue?')) {
+        return;
+      }
+      // For spot instances, terminate instead of stop
+      await handleTerminate(instanceId);
+      return;
+    }
+
     try {
       setActionLoading(instanceId);
       await stopInstance(instanceId);
       await loadInstances();
     } catch (error) {
       console.error('Failed to stop instance:', error);
+      if (error.message?.includes('Spot')) {
+        alert('Cannot stop Spot instances. Spot instances can only be terminated.');
+      } else {
+        alert('Failed to stop instance. Please check the console for details.');
+      }
     } finally {
       setActionLoading(null);
     }
@@ -65,6 +93,7 @@ export default function InstancesList() {
       await loadInstances();
     } catch (error) {
       console.error('Failed to terminate instance:', error);
+      alert('Failed to terminate instance. Please check the console for details.');
     } finally {
       setActionLoading(null);
     }
@@ -79,6 +108,73 @@ export default function InstancesList() {
       case 'terminated': return 'danger';
       default: return 'secondary';
     }
+  };
+
+  const getInstanceActions = (instance: EC2Instance) => {
+    const actions = [];
+
+    // Start button - only for stopped regular instances
+    if (instance.state === 'stopped' && !instance.isSpotInstance) {
+      actions.push(
+        <Button
+          key="start"
+          size="sm"
+          variant="success"
+          onClick={() => handleStart(instance.id)}
+          disabled={actionLoading === instance.id}
+          title="Start instance"
+        >
+          {actionLoading === instance.id ? (
+            <LoadingSpinner size="sm" />
+          ) : (
+            <Play className="w-4 h-4" />
+          )}
+        </Button>
+      );
+    }
+
+    // Stop button - only for running regular instances
+    if (instance.state === 'running' && !instance.isSpotInstance) {
+      actions.push(
+        <Button
+          key="stop"
+          size="sm"
+          variant="warning"
+          onClick={() => handleStop(instance.id)}
+          disabled={actionLoading === instance.id}
+          title="Stop instance"
+        >
+          {actionLoading === instance.id ? (
+            <LoadingSpinner size="sm" />
+          ) : (
+            <Square className="w-4 h-4" />
+          )}
+        </Button>
+      );
+    }
+
+    // Terminate button - always available for non-terminated instances
+    if (instance.state !== 'terminated') {
+      const isSpotRunning = instance.isSpotInstance && instance.state === 'running';
+      actions.push(
+        <Button
+          key="terminate"
+          size="sm"
+          variant="danger"
+          onClick={() => handleTerminate(instance.id)}
+          disabled={actionLoading === instance.id}
+          title={isSpotRunning ? "Terminate Spot instance (cannot be stopped)" : "Terminate instance"}
+        >
+          {actionLoading === instance.id ? (
+            <LoadingSpinner size="sm" />
+          ) : (
+            <Trash2 className="w-4 h-4" />
+          )}
+        </Button>
+      );
+    }
+
+    return actions;
   };
 
   if (loading) {
@@ -148,51 +244,25 @@ export default function InstancesList() {
                     {instance.state}
                   </Badge>
                   <div className="flex items-center space-x-2">
-                    {instance.state === 'stopped' && (
-                      <Button
-                        size="sm"
-                        variant="success"
-                        onClick={() => handleStart(instance.id)}
-                        disabled={actionLoading === instance.id}
-                      >
-                        {actionLoading === instance.id ? (
-                          <LoadingSpinner size="sm" />
-                        ) : (
-                          <Play className="w-4 h-4" />
-                        )}
-                      </Button>
-                    )}
-                    {instance.state === 'running' && (
-                      <Button
-                        size="sm"
-                        variant="warning"
-                        onClick={() => handleStop(instance.id)}
-                        disabled={actionLoading === instance.id}
-                      >
-                        {actionLoading === instance.id ? (
-                          <LoadingSpinner size="sm" />
-                        ) : (
-                          <Square className="w-4 h-4" />
-                        )}
-                      </Button>
-                    )}
-                    {instance.state !== 'terminated' && (
-                      <Button
-                        size="sm"
-                        variant="danger"
-                        onClick={() => handleTerminate(instance.id)}
-                        disabled={actionLoading === instance.id}
-                      >
-                        {actionLoading === instance.id ? (
-                          <LoadingSpinner size="sm" />
-                        ) : (
-                          <Trash2 className="w-4 h-4" />
-                        )}
-                      </Button>
-                    )}
+                    {getInstanceActions(instance)}
                   </div>
                 </div>
               </div>
+
+              {instance.isSpotInstance && instance.state === 'running' && (
+                <div className="mt-4 bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+                  <div className="flex items-start space-x-2">
+                    <AlertTriangle className="w-5 h-5 text-yellow-600 mt-0.5" />
+                    <div>
+                      <h4 className="font-medium text-yellow-900">Spot Instance Notice</h4>
+                      <p className="text-sm text-yellow-800 mt-1">
+                        This is a Spot instance. It cannot be stopped - only terminated. 
+                        AWS may terminate it at any time if capacity is needed or the Spot price exceeds your bid.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
                 <div>
