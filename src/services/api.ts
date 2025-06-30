@@ -95,8 +95,8 @@ export const createKeyPair = async (name: string): Promise<SSHKeyPair> => {
   return response.data;
 };
 
-export const uploadKeyPair = async (name: string, publicKey: string): Promise<SSHKeyPair> => {
-  const response = await api.post('/keypairs/upload', { name, publicKey });
+export const uploadKeyPair = async (name: string, publicKey: string, privateKey?: string): Promise<SSHKeyPair> => {
+  const response = await api.post('/keypairs/upload', { name, publicKey, privateKey });
   return response.data;
 };
 

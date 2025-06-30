@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Server, Play, Square, Trash2, RefreshCw, Plus, ExternalLink, AlertTriangle } from 'lucide-react';
+import { Server, Play, Square, Trash2, RefreshCw, Plus, ExternalLink, AlertTriangle, Terminal } from 'lucide-react';
 import { EC2Instance } from '../../types/aws';
 import { getInstances, startInstance, stopInstance, terminateInstance } from '../../services/api';
 import Button from '../ui/Button';
@@ -7,12 +7,14 @@ import Badge from '../ui/Badge';
 import Card from '../ui/Card';
 import LoadingSpinner from '../ui/LoadingSpinner';
 import InstanceCreationForm from './InstanceCreationForm';
+import SSHTerminal from '../terminal/SSHTerminal';
 
 export default function InstancesList() {
   const [instances, setInstances] = useState<EC2Instance[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [activeTerminals, setActiveTerminals] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     loadInstances();
@@ -99,6 +101,33 @@ export default function InstancesList() {
     }
   };
 
+  const handleOpenTerminal = (instance: EC2Instance) => {
+    if (!instance.publicIp && !instance.privateIp) {
+      alert('Instance has no IP address. Cannot establish SSH connection.');
+      return;
+    }
+
+    if (instance.state !== 'running') {
+      alert('Instance must be running to establish SSH connection.');
+      return;
+    }
+
+    if (!instance.keyPairName || instance.keyPairName === 'N/A') {
+      alert('Instance has no SSH key pair configured. Cannot establish SSH connection.');
+      return;
+    }
+
+    setActiveTerminals(prev => new Set(prev).add(instance.id));
+  };
+
+  const handleCloseTerminal = (instanceId: string) => {
+    setActiveTerminals(prev => {
+      const newSet = new Set(prev);
+      newSet.delete(instanceId);
+      return newSet;
+    });
+  };
+
   const getStateColor = (state: string) => {
     switch (state) {
       case 'running': return 'success';
@@ -110,8 +139,32 @@ export default function InstancesList() {
     }
   };
 
+  const canUseSSHTerminal = (instance: EC2Instance) => {
+    return instance.state === 'running' && 
+           instance.keyPairName && 
+           instance.keyPairName !== 'N/A' && 
+           (instance.publicIp || instance.privateIp);
+  };
+
   const getInstanceActions = (instance: EC2Instance) => {
     const actions = [];
+
+    // SSH Terminal button - only for running instances with SSH key
+    if (canUseSSHTerminal(instance)) {
+      actions.push(
+        <Button
+          key="ssh"
+          size="sm"
+          variant="primary"
+          onClick={() => handleOpenTerminal(instance)}
+          disabled={activeTerminals.has(instance.id)}
+          title="Open SSH Terminal"
+          className="bg-green-600 hover:bg-green-700 focus:ring-green-500"
+        >
+          <Terminal className="w-4 h-4" />
+        </Button>
+      );
+    }
 
     // Start button - only for stopped regular instances
     if (instance.state === 'stopped' && !instance.isSpotInstance) {
@@ -236,6 +289,12 @@ export default function InstancesList() {
                       {instance.isSpotInstance && (
                         <Badge variant="warning" size="sm">Spot</Badge>
                       )}
+                      {canUseSSHTerminal(instance) && (
+                        <Badge variant="success" size="sm">
+                          <Terminal className="w-3 h-3 mr-1" />
+                          SSH Ready
+                        </Badge>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -258,6 +317,22 @@ export default function InstancesList() {
                       <p className="text-sm text-yellow-800 mt-1">
                         This is a Spot instance. It cannot be stopped - only terminated. 
                         AWS may terminate it at any time if capacity is needed or the Spot price exceeds your bid.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* SSH Terminal Notice */}
+              {instance.state === 'running' && (!instance.keyPairName || instance.keyPairName === 'N/A') && (
+                <div className="mt-4 bg-blue-50 border border-blue-200 rounded-lg p-3">
+                  <div className="flex items-start space-x-2">
+                    <Terminal className="w-5 h-5 text-blue-600 mt-0.5" />
+                    <div>
+                      <h4 className="font-medium text-blue-900">SSH Terminal Unavailable</h4>
+                      <p className="text-sm text-blue-800 mt-1">
+                        This instance doesn't have an SSH key pair configured. To use the SSH terminal, 
+                        launch a new instance with a key pair that includes the private key.
                       </p>
                     </div>
                   </div>
@@ -311,6 +386,23 @@ export default function InstancesList() {
           ))}
         </div>
       )}
+
+      {/* SSH Terminals */}
+      {Array.from(activeTerminals).map(instanceId => {
+        const instance = instances.find(i => i.id === instanceId);
+        if (!instance) return null;
+
+        return (
+          <SSHTerminal
+            key={instanceId}
+            instanceId={instance.id}
+            instanceName={instance.name}
+            keyPairName={instance.keyPairName}
+            host={instance.publicIp || instance.privateIp}
+            onClose={() => handleCloseTerminal(instanceId)}
+          />
+        );
+      })}
 
       {showCreateForm && (
         <InstanceCreationForm

@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Key, Plus, Upload, Download, Trash2, RefreshCw, Copy, Eye, EyeOff } from 'lucide-react';
+import { Key, Plus, Upload, Download, Trash2, RefreshCw, Copy, Eye, EyeOff, Terminal, AlertTriangle } from 'lucide-react';
 import { SSHKeyPair } from '../../types/aws';
 import { getKeyPairs, createKeyPair, uploadKeyPair, deleteKeyPair } from '../../services/api';
 import Button from '../ui/Button';
+import Badge from '../ui/Badge';
 import Card from '../ui/Card';
 import LoadingSpinner from '../ui/LoadingSpinner';
 import KeyPairCreationForm from './KeyPairCreationForm';
@@ -142,11 +143,30 @@ export default function KeyPairsList() {
                     </div>
                   </div>
                   <div className="flex-1">
-                    <h3 className="text-lg font-semibold text-gray-900">{keyPair.name}</h3>
+                    <div className="flex items-center space-x-3">
+                      <h3 className="text-lg font-semibold text-gray-900">{keyPair.name}</h3>
+                      {keyPair.privateKey ? (
+                        <Badge variant="success" size="sm">
+                          <Terminal className="w-3 h-3 mr-1" />
+                          SSH Terminal Ready
+                        </Badge>
+                      ) : (
+                        <Badge variant="warning" size="sm">
+                          <AlertTriangle className="w-3 h-3 mr-1" />
+                          Public Key Only
+                        </Badge>
+                      )}
+                    </div>
                     <div className="flex items-center space-x-4 text-sm text-gray-600 mt-1">
                       <span>Fingerprint: {keyPair.fingerprint}</span>
                       <span>Created: {new Date(keyPair.createdAt).toLocaleDateString()}</span>
                     </div>
+                    {!keyPair.privateKey && (
+                      <div className="mt-2 text-sm text-orange-600">
+                        <AlertTriangle className="w-4 h-4 inline mr-1" />
+                        Upload the private key (.pem file) to enable SSH terminal functionality
+                      </div>
+                    )}
                   </div>
                 </div>
                 <div className="flex items-center space-x-2">

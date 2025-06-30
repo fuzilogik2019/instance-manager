@@ -42,6 +42,169 @@ export class AWSService {
     }
   }
 
+  // Get all instances from AWS
+  async getAllInstances(): Promise<EC2Instance[]> {
+    if (this.mockMode) {
+      return this.getMockInstances();
+    }
+
+    if (!this.ec2Client) {
+      throw new Error('AWS client not configured');
+    }
+
+    try {
+      console.log('Fetching all instances from AWS...');
+      
+      const command = new DescribeInstancesCommand({
+        // Don't filter by state - get ALL instances including terminated ones
+        Filters: [
+          {
+            Name: 'instance-state-name',
+            Values: ['pending', 'running', 'shutting-down', 'terminated', 'stopping', 'stopped']
+          }
+        ]
+      });
+
+      const response = await this.ec2Client.send(command);
+      const instances: EC2Instance[] = [];
+
+      console.log(`Found ${response.Reservations?.length || 0} reservations`);
+
+      if (response.Reservations) {
+        for (const reservation of response.Reservations) {
+          if (reservation.Instances) {
+            for (const instance of reservation.Instances) {
+              console.log(`Processing instance: ${instance.InstanceId} - State: ${instance.State?.Name}`);
+              
+              // Get instance name from tags
+              const nameTag = instance.Tags?.find(tag => tag.Key === 'Name');
+              const instanceName = nameTag?.Value || instance.InstanceId || 'Unnamed';
+
+              // Get all tags
+              const tags: Record<string, string> = {};
+              instance.Tags?.forEach(tag => {
+                if (tag.Key && tag.Value) {
+                  tags[tag.Key] = tag.Value;
+                }
+              });
+
+              // Map volumes
+              const volumes = instance.BlockDeviceMappings?.map(bdm => ({
+                id: bdm.Ebs?.VolumeId || '',
+                type: 'gp2' as const, // Default, would need separate call to get actual type
+                size: 8, // Default, would need separate call to get actual size
+                encrypted: false, // Default, would need separate call to get actual encryption
+                deleteOnTermination: bdm.Ebs?.DeleteOnTermination || false,
+              })) || [];
+
+              const ec2Instance: EC2Instance = {
+                id: instance.InstanceId!,
+                name: instanceName,
+                instanceType: instance.InstanceType!,
+                state: this.mapInstanceState(instance.State?.Name || 'unknown'),
+                region: instance.Placement?.AvailabilityZone?.slice(0, -1) || 'us-east-1',
+                availabilityZone: instance.Placement?.AvailabilityZone || 'us-east-1a',
+                publicIp: instance.PublicIpAddress,
+                privateIp: instance.PrivateIpAddress || '10.0.0.1',
+                keyPairName: instance.KeyName || 'N/A',
+                securityGroups: instance.SecurityGroups?.map(sg => sg.GroupId!) || [],
+                volumes,
+                isSpotInstance: !!instance.SpotInstanceRequestId,
+                launchTime: instance.LaunchTime || new Date(),
+                tags,
+              };
+
+              instances.push(ec2Instance);
+            }
+          }
+        }
+      }
+
+      console.log(`Processed ${instances.length} instances total`);
+      
+      // Sort by launch time, newest first
+      instances.sort((a, b) => new Date(b.launchTime).getTime() - new Date(a.launchTime).getTime());
+      
+      return instances;
+    } catch (error) {
+      console.error('Failed to get instances from AWS:', error);
+      throw error;
+    }
+  }
+
+  // Map AWS instance states to our internal states
+  private mapInstanceState(awsState: string): EC2Instance['state'] {
+    switch (awsState) {
+      case 'pending':
+        return 'pending';
+      case 'running':
+        return 'running';
+      case 'shutting-down':
+        return 'stopping';
+      case 'terminated':
+        return 'terminated';
+      case 'stopping':
+        return 'stopping';
+      case 'stopped':
+        return 'stopped';
+      default:
+        return 'pending';
+    }
+  }
+
+  // Mock instances for development
+  private getMockInstances(): EC2Instance[] {
+    return [
+      {
+        id: 'i-1234567890abcdef0',
+        name: 'Mock Web Server',
+        instanceType: 't3.micro',
+        state: 'running',
+        region: 'us-east-1',
+        availabilityZone: 'us-east-1a',
+        publicIp: '54.123.45.67',
+        privateIp: '10.0.1.100',
+        keyPairName: 'my-key-pair',
+        securityGroups: ['sg-12345678'],
+        volumes: [
+          {
+            id: 'vol-1234567890abcdef0',
+            type: 'gp3',
+            size: 20,
+            encrypted: true,
+            deleteOnTermination: true,
+          }
+        ],
+        isSpotInstance: false,
+        launchTime: new Date(Date.now() - 3600000), // 1 hour ago
+        tags: { Name: 'Mock Web Server', Environment: 'Development' },
+      },
+      {
+        id: 'i-0987654321fedcba0',
+        name: 'Mock Game Server',
+        instanceType: 't3.small',
+        state: 'stopped',
+        region: 'us-east-1',
+        availabilityZone: 'us-east-1b',
+        privateIp: '10.0.1.101',
+        keyPairName: 'game-server-key',
+        securityGroups: ['sg-87654321'],
+        volumes: [
+          {
+            id: 'vol-0987654321fedcba0',
+            type: 'gp2',
+            size: 30,
+            encrypted: false,
+            deleteOnTermination: false,
+          }
+        ],
+        isSpotInstance: true,
+        launchTime: new Date(Date.now() - 7200000), // 2 hours ago
+        tags: { Name: 'Mock Game Server', Environment: 'Production' },
+      }
+    ];
+  }
+
   // Instance Management
   async launchInstance(request: InstanceCreationRequest): Promise<{ instanceId: string; publicIp?: string; privateIp: string; availabilityZone: string }> {
     if (this.mockMode) {

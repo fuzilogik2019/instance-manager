@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useForm } from 'react-hook-form';
-import { Key, Download, AlertCircle } from 'lucide-react';
+import { Key, Download, AlertCircle, Terminal } from 'lucide-react';
 import { createKeyPair } from '../../services/api';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
@@ -89,6 +89,19 @@ export default function KeyPairCreationForm({ onKeyPairCreated, onClose }: KeyPa
               </div>
             </div>
 
+            <div className="bg-green-50 p-4 rounded-lg">
+              <div className="flex items-start space-x-3">
+                <Terminal className="w-5 h-5 text-green-600 mt-0.5" />
+                <div>
+                  <h4 className="font-medium text-green-900">SSH Terminal Ready</h4>
+                  <p className="text-sm text-green-800 mt-1">
+                    This key pair will include the private key, allowing you to use the built-in SSH terminal 
+                    directly from your browser to connect to instances.
+                  </p>
+                </div>
+              </div>
+            </div>
+
             <div className="flex items-center justify-end space-x-3 pt-6 border-t">
               <Button type="button" variant="secondary" onClick={onClose}>
                 Cancel
@@ -128,6 +141,19 @@ export default function KeyPairCreationForm({ onKeyPairCreated, onClose }: KeyPa
               </div>
             </div>
 
+            <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+              <div className="flex items-start space-x-3">
+                <Terminal className="w-5 h-5 text-green-600 mt-0.5" />
+                <div>
+                  <h4 className="font-medium text-green-900">SSH Terminal Enabled</h4>
+                  <p className="text-sm text-green-800 mt-1">
+                    This key pair includes the private key, so you can use the SSH terminal feature directly 
+                    from the browser when connecting to instances that use this key pair.
+                  </p>
+                </div>
+              </div>
+            </div>
+
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Public Key</label>
@@ -147,7 +173,7 @@ export default function KeyPairCreationForm({ onKeyPairCreated, onClose }: KeyPa
             <div className="flex items-center justify-center space-x-3 pt-6 border-t">
               <Button onClick={downloadPrivateKey} variant="success">
                 <Download className="w-4 h-4 mr-2" />
-                Download Private Key
+                Download Private Key (.pem)
               </Button>
               <Button onClick={handleFinish}>
                 Continue
