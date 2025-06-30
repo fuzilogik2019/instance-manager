@@ -14,6 +14,21 @@ export interface InstanceType {
   spotPrice: number;
 }
 
+export interface AMI {
+  id: string;
+  name: string;
+  description: string;
+  platform: 'linux' | 'windows' | 'macos';
+  osType: 'amazon-linux' | 'ubuntu' | 'windows' | 'redhat' | 'suse' | 'debian' | 'macos';
+  osVersion: string;
+  architecture: 'x86_64' | 'arm64';
+  virtualizationType: 'hvm' | 'paravirtual';
+  defaultUsername: string;
+  isPublic: boolean;
+  creationDate: string;
+  imageLocation?: string;
+}
+
 export interface EBSVolume {
   id: string;
   type: 'gp2' | 'gp3' | 'io1' | 'io2' | 'st1' | 'sc1';
@@ -58,7 +73,7 @@ export interface EC2Instance {
   id: string;
   name: string;
   instanceType: string;
-  state: 'pending' | 'running' | 'stopping' | 'stopped' | 'terminated';
+  state: 'pending' | 'running' | 'stopping' | 'stopped' | 'terminated' | 'initializing';
   region: string;
   availabilityZone: string;
   publicIp?: string;
@@ -69,16 +84,23 @@ export interface EC2Instance {
   isSpotInstance: boolean;
   launchTime: Date;
   tags: Record<string, string>;
+  ami?: AMI;
+  statusChecks?: {
+    instanceStatus: string;
+    systemStatus: string;
+    isSSHReady: boolean;
+  };
 }
 
 export interface InstanceCreationRequest {
   name: string;
   region: string;
+  amiId: string;
   instanceType: string;
   keyPairId: string;
   securityGroupIds: string[];
   volumes: Omit<EBSVolume, 'id'>[];
-  existingVolumeIds?: string[]; // New field for attaching existing volumes
+  existingVolumeIds?: string[];
   isSpotInstance: boolean;
   userData?: string;
   tags: Record<string, string>;

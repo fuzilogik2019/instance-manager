@@ -42,6 +42,7 @@ export default function SSHTerminal({
   // Use refs to avoid stale closure issues
   const isConnectedRef = useRef(false);
   const isConnectingRef = useRef(false);
+  const socketRef = useRef<Socket | null>(null);
 
   // Update refs when state changes
   useEffect(() => {
@@ -52,6 +53,10 @@ export default function SSHTerminal({
   useEffect(() => {
     isConnectingRef.current = isConnecting;
   }, [isConnecting]);
+
+  useEffect(() => {
+    socketRef.current = socket.current;
+  }, [socket.current]);
 
   useEffect(() => {
     initializeTerminal();
@@ -137,41 +142,26 @@ export default function SSHTerminal({
 
     // Handle terminal input - CRITICAL: This handles all keyboard input
     terminal.current.onData((data) => {
-      console.log("Terminal input:", data.charCodeAt(0), data);
-      console.log(
-        "Current connection state - isConnected:",
-        isConnectedRef.current,
-        "isConnecting:",
-        isConnectingRef.current
-      );
-      console.log("Socket current:", !!socket.current);
+      console.log("🎹 Terminal input received:", {
+        data: data,
+        charCode: data.charCodeAt(0),
+        length: data.length,
+        isConnected: isConnectedRef.current,
+        hasSocket: !!socketRef.current,
+      });
 
-      // If connected, send input to SSH session
-      if (socket.current && isConnectedRef.current) {
-        console.log("Sending input to SSH session");
-        socket.current.emit("ssh:input", { input: data });
+      // Always try to send input if we have a socket connection
+      if (socketRef.current) {
+        console.log("📤 Sending input to server via socket");
+        socketRef.current.emit("ssh:input", { input: data });
       } else {
-        // If not connected, provide visual feedback
-        console.log("Terminal not connected, input ignored:", data);
-        console.log(
-          "Debug - isConnected:",
-          isConnectedRef.current,
-          "socket.current:",
-          !!socket.current
-        );
+        console.warn("⚠️ No socket connection available for input");
         if (terminal.current && !isConnectingRef.current) {
           // Show a visual indicator that the terminal is not ready
           if (data === "\r") {
             // Enter key
             terminal.current.write(
-              "\r\n\x1b[31m❌ Terminal not connected. Please wait for connection.\x1b[0m\r\n"
-            );
-            terminal.current.write(
-              "\r\n\x1b[33m🔍 Debug: isConnected=" +
-                isConnectedRef.current +
-                ", socket=" +
-                !!socket.current +
-                "\x1b[0m\r\n"
+              "\r\n\x1b[31m❌ No socket connection. Please reconnect.\x1b[0m\r\n"
             );
           }
         }
@@ -180,9 +170,9 @@ export default function SSHTerminal({
 
     // Handle terminal resize
     terminal.current.onResize(({ cols, rows }) => {
-      console.log("Terminal resized:", cols, rows);
-      if (socket.current && isConnectedRef.current) {
-        socket.current.emit("ssh:resize", { cols, rows });
+      console.log("📐 Terminal resized:", cols, rows);
+      if (socketRef.current && isConnectedRef.current) {
+        socketRef.current.emit("ssh:resize", { cols, rows });
       }
     });
 
@@ -234,11 +224,16 @@ export default function SSHTerminal({
       );
     }
 
-    // Create socket connection
+    // Create socket connection with better configuration
     socket.current = io("http://localhost:3001", {
       transports: ["websocket"],
       timeout: 20000,
+      forceNew: true, // Force a new connection
+      reconnection: false, // Disable automatic reconnection to avoid conflicts
     });
+
+    // Update the ref immediately
+    socketRef.current = socket.current;
 
     socket.current.on("connect", () => {
       console.log("🔌 Connected to SSH service");
@@ -354,6 +349,9 @@ export default function SSHTerminal({
       isConnectedRef.current = false;
       setConnectionStatus("Disconnected");
 
+      // Clear the socket ref
+      socketRef.current = null;
+
       if (terminal.current) {
         terminal.current.writeln(
           "\x1b[1;31m🔌 Connection to server lost\x1b[0m"
@@ -367,6 +365,9 @@ export default function SSHTerminal({
       isConnectingRef.current = false;
       setConnectionStatus("Connection failed");
 
+      // Clear the socket ref
+      socketRef.current = null;
+
       if (terminal.current) {
         terminal.current.writeln(
           "\x1b[1;31m❌ Failed to connect to SSH service\x1b[0m"
@@ -379,11 +380,17 @@ export default function SSHTerminal({
   };
 
   const cleanup = () => {
+    console.log("🧹 Cleaning up SSH terminal...");
+
     if (socket.current) {
       socket.current.disconnect();
+      socket.current = null;
+      socketRef.current = null;
     }
+
     if (terminal.current) {
       terminal.current.dispose();
+      terminal.current = null;
     }
   };
 
@@ -393,6 +400,8 @@ export default function SSHTerminal({
     // Cleanup existing connection
     if (socket.current) {
       socket.current.disconnect();
+      socket.current = null;
+      socketRef.current = null;
     }
 
     // Reset states

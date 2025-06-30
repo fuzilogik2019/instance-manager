@@ -1,22 +1,27 @@
 import React, { useState, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
-import { Plus, HardDrive, AlertCircle, CheckCircle, Link } from 'lucide-react';
-import { AWSRegion, InstanceType, SecurityGroup, SSHKeyPair, EBSVolume } from '../../types/aws';
-import { getRegions, getInstanceTypes, getSecurityGroups, getKeyPairs, getVolumes, createInstance } from '../../services/api';
+import { Plus, HardDrive, AlertCircle, CheckCircle, Link, Monitor, Server, Smartphone } from 'lucide-react';
+import { AWSRegion, InstanceType, SecurityGroup, SSHKeyPair, EBSVolume, AMI } from '../../types/aws';
+import { getRegions, getInstanceTypes, getSecurityGroups, getKeyPairs, getVolumes, getAMIs, createInstance } from '../../services/api';
 import LoadingSpinner from '../ui/LoadingSpinner';
 import Button from '../ui/Button';
 import Select from '../ui/Select';
 import Input from '../ui/Input';
 import Card from '../ui/Card';
+import Badge from '../ui/Badge';
 
 interface FormData {
   name: string;
   region: string;
+  amiId: string;
   instanceType: string;
   keyPairId: string;
   securityGroupIds: string[];
   isSpotInstance: boolean;
   userData: string;
+  rootVolumeSize: number;
+  rootVolumeType: 'gp2' | 'gp3' | 'io1' | 'io2';
+  rootVolumeEncrypted: boolean;
 }
 
 interface InstanceCreationFormProps {
@@ -26,6 +31,7 @@ interface InstanceCreationFormProps {
 
 export default function InstanceCreationForm({ onInstanceCreated, onClose }: InstanceCreationFormProps) {
   const [regions, setRegions] = useState<AWSRegion[]>([]);
+  const [amis, setAMIs] = useState<AMI[]>([]);
   const [instanceTypes, setInstanceTypes] = useState<InstanceType[]>([]);
   const [securityGroups, setSecurityGroups] = useState<SecurityGroup[]>([]);
   const [keyPairs, setKeyPairs] = useState<SSHKeyPair[]>([]);
@@ -34,10 +40,21 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
   const [selectedExistingVolumes, setSelectedExistingVolumes] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [amiFilter, setAmiFilter] = useState<string>('all');
 
-  const { register, handleSubmit, watch, setValue, formState: { errors } } = useForm<FormData>();
+  const { register, handleSubmit, watch, setValue, formState: { errors } } = useForm<FormData>({
+    defaultValues: {
+      rootVolumeSize: 8,
+      rootVolumeType: 'gp3',
+      rootVolumeEncrypted: true,
+    }
+  });
+  
   const selectedRegion = watch('region');
+  const selectedAMI = watch('amiId');
   const selectedInstanceType = watch('instanceType');
+  const rootVolumeSize = watch('rootVolumeSize');
+  const rootVolumeType = watch('rootVolumeType');
 
   useEffect(() => {
     loadRegions();
@@ -46,6 +63,7 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
 
   useEffect(() => {
     if (selectedRegion) {
+      loadAMIs(selectedRegion);
       loadInstanceTypes(selectedRegion);
       loadSecurityGroups(selectedRegion);
       loadAvailableVolumes(selectedRegion);
@@ -58,6 +76,19 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
       setRegions(data);
     } catch (error) {
       console.error('Failed to load regions:', error);
+    }
+  };
+
+  const loadAMIs = async (region: string) => {
+    try {
+      setLoading(true);
+      const data = await getAMIs(region);
+      setAMIs(data);
+      console.log(`Loaded ${data.length} AMIs for region ${region}`);
+    } catch (error) {
+      console.error('Failed to load AMIs:', error);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -107,7 +138,7 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
       type: 'gp3',
       size: 20,
       encrypted: true,
-      deleteOnTermination: true,
+      deleteOnTermination: false, // Additional volumes should not delete on termination by default
     }]);
   };
 
@@ -130,25 +161,57 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
     );
   };
 
+  const getOSIcon = (osType: string) => {
+    switch (osType) {
+      case 'windows':
+        return <Monitor className="w-5 h-5 text-blue-600" />;
+      case 'macos':
+        return <Smartphone className="w-5 h-5 text-gray-600" />;
+      default:
+        return <Server className="w-5 h-5 text-green-600" />;
+    }
+  };
+
+  const getOSColor = (osType: string) => {
+    switch (osType) {
+      case 'amazon-linux': return 'bg-orange-100 text-orange-800';
+      case 'ubuntu': return 'bg-orange-100 text-orange-800';
+      case 'windows': return 'bg-blue-100 text-blue-800';
+      case 'redhat': return 'bg-red-100 text-red-800';
+      case 'suse': return 'bg-green-100 text-green-800';
+      case 'debian': return 'bg-purple-100 text-purple-800';
+      case 'macos': return 'bg-gray-100 text-gray-800';
+      default: return 'bg-gray-100 text-gray-800';
+    }
+  };
+
+  const getFilteredAMIs = () => {
+    if (amiFilter === 'all') return amis;
+    return amis.filter(ami => ami.osType === amiFilter);
+  };
+
+  const selectedAMIDetails = amis.find(ami => ami.id === selectedAMI);
+  const selectedInstanceTypeDetails = instanceTypes.find(type => type.name === selectedInstanceType);
+
   const onSubmit = async (data: FormData) => {
     try {
       setCreating(true);
       
-      // Add root volume if no volumes are specified
-      let finalVolumes = volumes;
-      if (volumes.length === 0 && selectedExistingVolumes.length === 0) {
-        finalVolumes = [{
-          type: 'gp3',
-          size: 20,
-          encrypted: true,
-          deleteOnTermination: true,
-        }];
-      }
+      // Create the root volume configuration
+      const rootVolume: Omit<EBSVolume, 'id'> = {
+        type: data.rootVolumeType,
+        size: data.rootVolumeSize,
+        encrypted: data.rootVolumeEncrypted,
+        deleteOnTermination: true, // Root volume should delete on termination
+      };
+
+      // Combine root volume with additional volumes
+      const allVolumes = [rootVolume, ...volumes];
 
       await createInstance({
         ...data,
         securityGroupIds: data.securityGroupIds || [],
-        volumes: finalVolumes,
+        volumes: allVolumes,
         existingVolumeIds: selectedExistingVolumes,
         tags: { Name: data.name },
       });
@@ -156,16 +219,15 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
       onClose();
     } catch (error) {
       console.error('Failed to create instance:', error);
+      alert('Error creating instance: ' + (error.message || 'Unknown error'));
     } finally {
       setCreating(false);
     }
   };
 
-  const selectedInstanceTypeDetails = instanceTypes.find(type => type.name === selectedInstanceType);
-
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-      <div className="bg-white rounded-lg shadow-xl max-w-5xl w-full max-h-[90vh] overflow-y-auto">
+      <div className="bg-white rounded-lg shadow-xl max-w-6xl w-full max-h-[90vh] overflow-y-auto">
         <div className="px-6 py-4 border-b border-gray-200">
           <h2 className="text-xl font-semibold text-gray-900">Launch New EC2 Instance</h2>
           <p className="text-sm text-gray-600 mt-1">Configure your new EC2 instance with the options below</p>
@@ -190,6 +252,121 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
           </div>
 
           {selectedRegion && (
+            <Card title="🖥️ Operating System Selection">
+              <div className="space-y-4">
+                {/* AMI Filter */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Filter by Operating System</label>
+                  <div className="flex flex-wrap gap-2">
+                    {[
+                      { value: 'all', label: 'All Operating Systems', count: amis.length },
+                      { value: 'amazon-linux', label: 'Amazon Linux', count: amis.filter(a => a.osType === 'amazon-linux').length },
+                      { value: 'ubuntu', label: 'Ubuntu', count: amis.filter(a => a.osType === 'ubuntu').length },
+                      { value: 'windows', label: 'Windows', count: amis.filter(a => a.osType === 'windows').length },
+                      { value: 'redhat', label: 'Red Hat', count: amis.filter(a => a.osType === 'redhat').length },
+                      { value: 'suse', label: 'SUSE', count: amis.filter(a => a.osType === 'suse').length },
+                      { value: 'debian', label: 'Debian', count: amis.filter(a => a.osType === 'debian').length },
+                    ].filter(filter => filter.count > 0).map((filter) => (
+                      <button
+                        key={filter.value}
+                        type="button"
+                        onClick={() => setAmiFilter(filter.value)}
+                        className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                          amiFilter === filter.value
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                        }`}
+                      >
+                        {filter.label} ({filter.count})
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* AMI Selection */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Choose AMI (Amazon Machine Image)
+                  </label>
+                  {loading ? (
+                    <div className="flex items-center justify-center py-8">
+                      <LoadingSpinner size="md" />
+                      <span className="ml-2 text-gray-600">Loading AMIs...</span>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 gap-3 max-h-64 overflow-y-auto border border-gray-200 rounded-lg p-4">
+                      {getFilteredAMIs().map((ami) => (
+                        <label
+                          key={ami.id}
+                          className={`flex items-start space-x-3 p-3 rounded-lg border-2 cursor-pointer transition-all ${
+                            selectedAMI === ami.id
+                              ? 'border-blue-500 bg-blue-50'
+                              : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            value={ami.id}
+                            {...register('amiId', { required: 'Please select an AMI' })}
+                            className="mt-1"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center space-x-2 mb-1">
+                              {getOSIcon(ami.osType)}
+                              <span className="font-medium text-gray-900">{ami.name}</span>
+                              <Badge variant="secondary" size="sm" className={getOSColor(ami.osType)}>
+                                {ami.osType.replace('-', ' ').toUpperCase()}
+                              </Badge>
+                              <Badge variant="secondary" size="sm">
+                                {ami.osVersion}
+                              </Badge>
+                              <Badge variant="secondary" size="sm">
+                                {ami.architecture}
+                              </Badge>
+                            </div>
+                            <p className="text-sm text-gray-600 mb-2">{ami.description}</p>
+                            <div className="flex items-center space-x-4 text-xs text-gray-500">
+                              <span>Default User: {ami.defaultUsername}</span>
+                              <span>Platform: {ami.platform}</span>
+                              <span>Created: {new Date(ami.creationDate).toLocaleDateString()}</span>
+                            </div>
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                  {errors.amiId && (
+                    <p className="text-sm text-red-600 mt-1">{errors.amiId.message}</p>
+                  )}
+                </div>
+
+                {/* Selected AMI Details */}
+                {selectedAMIDetails && (
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                    <div className="flex items-start space-x-3">
+                      {getOSIcon(selectedAMIDetails.osType)}
+                      <div>
+                        <h4 className="font-medium text-green-900">Selected Operating System</h4>
+                        <p className="text-sm text-green-800 mt-1">
+                          <strong>{selectedAMIDetails.name}</strong> - {selectedAMIDetails.osVersion}
+                        </p>
+                        <p className="text-sm text-green-700 mt-1">
+                          Default SSH user: <code className="bg-green-100 px-1 rounded">{selectedAMIDetails.defaultUsername}</code>
+                        </p>
+                        {selectedAMIDetails.platform === 'windows' && (
+                          <p className="text-sm text-blue-700 mt-1">
+                            💡 Windows instances use RDP (Remote Desktop) instead of SSH for remote access.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </Card>
+          )}
+
+          {selectedRegion && selectedAMI && (
             <Card title="Instance Configuration">
               <div className="space-y-4">
                 <Select
@@ -238,9 +415,20 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
                 label="SSH Key Pair"
                 {...register('keyPairId', { required: 'Key pair is required' })}
                 error={errors.keyPairId?.message}
-                options={keyPairs.map(kp => ({ value: kp.name, label: kp.name }))}
+                options={keyPairs.map(kp => ({ 
+                  value: kp.name, 
+                  label: `${kp.name}${kp.privateKey ? ' (SSH Terminal Ready)' : ' (Public Key Only)'}` 
+                }))}
                 placeholder="Select key pair"
               />
+
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <h4 className="font-medium text-blue-900 mb-2">💡 SSH Terminal Access</h4>
+                <p className="text-sm text-blue-800">
+                  To use the built-in SSH terminal, make sure your key pair includes the private key (.pem file content). 
+                  Key pairs marked as "SSH Terminal Ready" can be used for browser-based SSH access.
+                </p>
+              </div>
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Security Groups</label>
@@ -263,10 +451,64 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
 
           <Card title="Storage Configuration">
             <div className="space-y-6">
-              {/* New Volumes Section */}
+              {/* Root Volume Configuration */}
+              <div>
+                <h4 className="font-medium text-gray-900 mb-4">Root Volume (Boot Drive)</h4>
+                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-4">
+                  <div className="flex items-start space-x-3">
+                    <HardDrive className="w-5 h-5 text-yellow-600 mt-0.5" />
+                    <div>
+                      <h5 className="font-medium text-yellow-900">Root Volume Configuration</h5>
+                      <p className="text-sm text-yellow-800 mt-1">
+                        This is the main drive where the operating system will be installed. 
+                        Default size is 8 GB for most AMIs, but you can increase it if needed.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <Select
+                    label="Root Volume Type"
+                    {...register('rootVolumeType')}
+                    options={[
+                      { value: 'gp3', label: 'gp3 (General Purpose SSD - Latest)' },
+                      { value: 'gp2', label: 'gp2 (General Purpose SSD)' },
+                      { value: 'io1', label: 'io1 (Provisioned IOPS SSD)' },
+                      { value: 'io2', label: 'io2 (Provisioned IOPS SSD - Latest)' },
+                    ]}
+                  />
+
+                  <Input
+                    label="Root Volume Size (GB)"
+                    type="number"
+                    {...register('rootVolumeSize', { 
+                      required: 'Root volume size is required',
+                      min: { value: 8, message: 'Minimum size is 8 GB' },
+                      max: { value: 16384, message: 'Maximum size is 16384 GB' }
+                    })}
+                    error={errors.rootVolumeSize?.message}
+                    min="8"
+                    max="16384"
+                  />
+
+                  <div className="flex items-center space-x-4 pt-6">
+                    <label className="flex items-center">
+                      <input
+                        type="checkbox"
+                        {...register('rootVolumeEncrypted')}
+                        className="rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50"
+                      />
+                      <span className="ml-2 text-sm text-gray-700">Encrypt root volume</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              {/* Additional Volumes Section */}
               <div>
                 <div className="flex items-center justify-between mb-4">
-                  <h4 className="font-medium text-gray-900">Create New Volumes</h4>
+                  <h4 className="font-medium text-gray-900">Additional Storage Volumes</h4>
                   <Button type="button" variant="secondary" size="sm" onClick={addVolume}>
                     <Plus className="w-4 h-4 mr-1" />
                     Add Volume
@@ -328,8 +570,8 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
                 {volumes.length === 0 && (
                   <div className="text-center py-6 text-gray-500 border-2 border-dashed border-gray-300 rounded-lg">
                     <HardDrive className="w-8 h-8 mx-auto mb-2 text-gray-400" />
-                    <p>No new volumes configured</p>
-                    <p className="text-sm">Root volume will be created automatically</p>
+                    <p>No additional volumes configured</p>
+                    <p className="text-sm">Only the root volume will be created</p>
                   </div>
                 )}
               </div>

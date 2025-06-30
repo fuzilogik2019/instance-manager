@@ -33,4 +33,24 @@ router.get('/instance-types', async (req, res) => {
   }
 });
 
+// Get available AMIs for a region
+router.get('/amis', async (req, res) => {
+  try {
+    const { region } = req.query;
+    
+    if (!region) {
+      return res.status(400).json({ error: 'Region parameter is required' });
+    }
+    
+    console.log(`Getting AMIs for region: ${region}`);
+    const awsService = new AWSService(region as string);
+    const amis = await awsService.getAMIs(region as string);
+    console.log(`Returning ${amis.length} AMIs for region ${region}`);
+    res.json(amis);
+  } catch (error) {
+    console.error('Failed to get AMIs:', error);
+    res.status(500).json({ error: 'Failed to get AMIs' });
+  }
+});
+
 export default router;

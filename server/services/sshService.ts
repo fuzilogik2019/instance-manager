@@ -10,6 +10,8 @@ interface SSHConnection {
   socket: any;
   sshClient: Client;
   stream?: any;
+  connectionId: string;
+  isAuthenticated: boolean;
 }
 
 class SSHService {
@@ -45,6 +47,8 @@ class SSHService {
   }
 
   private async handleSSHConnect(socket: any, data: { instanceId: string; keyPairName: string; username?: string }) {
+    const connectionId = `${socket.id}-${data.instanceId}`;
+    
     try {
       console.log(`🚀 SSH connection request for instance: ${data.instanceId}`);
       console.log(`🔑 Looking for key pair: ${data.keyPairName}`);
@@ -152,32 +156,50 @@ class SSHService {
       console.log(`🔑 Connecting to ${username}@${host} using key: ${keyPair.name}`);
       console.log(`🔐 Private key length: ${keyPair.private_key.length} characters`);
 
-      // Validate private key format
-      if (!this.isValidPrivateKey(keyPair.private_key)) {
+      // Validate and clean private key format
+      const cleanedPrivateKey = this.cleanPrivateKey(keyPair.private_key);
+      if (!cleanedPrivateKey) {
         console.error(`❌ Invalid private key format for: ${keyPair.name}`);
         socket.emit('ssh:error', { 
-          message: 'Invalid private key format. Please ensure you uploaded a valid .pem file with proper formatting:\n\n-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----' 
+          message: 'Invalid private key format. Please ensure you uploaded a valid .pem file with proper formatting:\n\n-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----\n\nOr:\n\n-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----' 
         });
         return;
       }
 
-      // Create SSH connection
+      console.log(`🔐 Using cleaned private key (${cleanedPrivateKey.length} chars)`);
+
+      // Create SSH connection with unique connection ID
       const sshClient = new Client();
-      const connectionId = `${socket.id}-${data.instanceId}`;
+
+      console.log(`🔗 Creating SSH connection with ID: ${connectionId}`);
 
       const connection: SSHConnection = {
         instanceId: data.instanceId,
         host,
         username,
-        privateKey: keyPair.private_key,
+        privateKey: cleanedPrivateKey,
         socket,
         sshClient,
+        connectionId,
+        isAuthenticated: false,
       };
 
+      // Store connection IMMEDIATELY - this is critical
       this.connections.set(connectionId, connection);
+      console.log(`📝 Stored connection: ${connectionId}`);
+      console.log(`📊 Total active connections: ${this.connections.size}`);
 
+      // Set up SSH client event handlers BEFORE connecting
       sshClient.on('ready', () => {
-        console.log(`✅ SSH connection established to ${host}`);
+        console.log(`✅ SSH connection established to ${host} (${connectionId})`);
+        
+        // Update connection status
+        const storedConnection = this.connections.get(connectionId);
+        if (storedConnection) {
+          storedConnection.isAuthenticated = true;
+          console.log(`🔐 Updated authentication status for: ${connectionId}`);
+        }
+        
         socket.emit('ssh:connected', { 
           message: `Connected to ${username}@${host}`,
           instanceId: data.instanceId,
@@ -203,13 +225,31 @@ class SSHService {
           if (err) {
             console.error('❌ Failed to start shell:', err);
             socket.emit('ssh:error', { message: 'Failed to start shell session' });
+            this.cleanupConnection(connectionId);
             return;
           }
 
-          console.log('🐚 Shell session started');
+          console.log(`🐚 Shell session started for connection: ${connectionId}`);
 
-          // Store stream reference
-          connection.stream = stream;
+          // Store stream reference in the connection - CRITICAL FIX
+          const currentConnection = this.connections.get(connectionId);
+          if (currentConnection) {
+            currentConnection.stream = stream;
+            console.log(`📝 Stream stored successfully for connection: ${connectionId}`);
+            console.log(`🔍 Connection verification: ${currentConnection.connectionId}, socket: ${currentConnection.socket.id}`);
+            // Emitir evento shell-ready
+            socket.emit('ssh:shell-ready', { message: 'Shell session is ready', instanceId: data.instanceId });
+          } else {
+            console.error(`❌ Connection not found when storing stream: ${connectionId}`);
+            console.log(`📊 Available connections: ${Array.from(this.connections.keys()).join(', ')}`);
+            // Try to recreate the connection entry
+            connection.stream = stream;
+            connection.isAuthenticated = true;
+            this.connections.set(connectionId, connection);
+            console.log(`🔄 Recreated connection entry: ${connectionId}`);
+            // Emitir evento shell-ready
+            socket.emit('ssh:shell-ready', { message: 'Shell session is ready', instanceId: data.instanceId });
+          }
 
           // Handle shell data output
           stream.on('data', (data: Buffer) => {
@@ -219,14 +259,14 @@ class SSHService {
 
           // Handle shell close
           stream.on('close', () => {
-            console.log('🐚 Shell session closed');
+            console.log(`🐚 Shell session closed for connection: ${connectionId}`);
             socket.emit('ssh:disconnected', { message: 'Shell session ended' });
             this.cleanupConnection(connectionId);
           });
 
           // Handle shell errors
           stream.on('error', (error: Error) => {
-            console.error('🐚 Shell error:', error);
+            console.error(`🐚 Shell error for connection ${connectionId}:`, error);
             socket.emit('ssh:error', { message: `Shell error: ${error.message}` });
           });
 
@@ -247,20 +287,20 @@ class SSHService {
       });
 
       sshClient.on('error', (err) => {
-        console.error('❌ SSH connection error:', err);
+        console.error(`❌ SSH connection error for ${connectionId}:`, err);
         let errorMessage = `Connection failed: ${err.message}`;
         
         // Provide more specific error messages
         if (err.message.includes('ECONNREFUSED')) {
-          errorMessage = 'Connection refused. Check if SSH service is running on the instance and security group allows port 22.';
+          errorMessage = 'Connection refused. The instance may still be initializing or SSH service is not running.\n\nTroubleshooting:\n• Wait 2-3 minutes for instance to fully boot\n• Check security group allows port 22\n• Verify instance status checks are passing';
         } else if (err.message.includes('ENOTFOUND')) {
           errorMessage = 'Host not found. Check if the instance has a valid IP address.';
         } else if (err.message.includes('ETIMEDOUT')) {
-          errorMessage = 'Connection timeout. Check security group settings and instance network configuration.';
-        } else if (err.message.includes('authentication') || err.message.includes('Authentication')) {
-          errorMessage = 'Authentication failed. Verify the SSH key pair is correct for this instance.';
+          errorMessage = 'Connection timeout. This usually means:\n\n• Security group is blocking SSH (port 22)\n• Instance is still booting up\n• Network connectivity issues\n\nSolutions:\n• Check security group has SSH rule (port 22) from 0.0.0.0/0\n• Wait for instance to complete initialization\n• Verify instance has public IP if connecting from internet';
+        } else if (err.message.includes('authentication') || err.message.includes('Authentication') || err.message.includes('All configured authentication methods failed')) {
+          errorMessage = 'SSH Authentication failed. This means:\n\n• The private key doesn\'t match the instance key pair\n• Wrong username for this AMI type\n• Key format issues\n\nSolutions:\n• Verify you\'re using the correct .pem file\n• Try username "ubuntu" for Ubuntu instances\n• Try username "ec2-user" for Amazon Linux\n• Re-upload the private key ensuring proper format\n• Check the key pair name matches the instance';
         } else if (err.message.includes('key')) {
-          errorMessage = 'SSH key error. Please check that the private key is valid and matches the instance key pair.';
+          errorMessage = 'SSH key error. Please check that the private key is valid and matches the instance key pair.\n\nTips:\n• Ensure the .pem file is not corrupted\n• Verify the key pair name matches\n• Try re-uploading the private key';
         }
         
         socket.emit('ssh:error', { 
@@ -271,18 +311,22 @@ class SSHService {
       });
 
       sshClient.on('close', () => {
-        console.log('🔌 SSH connection closed');
+        console.log(`🔌 SSH connection closed for ${connectionId}`);
         socket.emit('ssh:disconnected', { message: 'Connection closed' });
         this.cleanupConnection(connectionId);
       });
 
-      // Connect to SSH with improved configuration
-      console.log(`🚀 Initiating SSH connection...`);
-      sshClient.connect({
+      // Connect to SSH with improved configuration and multiple username attempts
+      console.log(`🚀 Initiating SSH connection for ${connectionId}...`);
+      
+      // Try different usernames based on common AMI types
+      const usernamesToTry = this.getUsernamesForInstance(username, instance);
+      
+      this.trySSHConnection(sshClient, {
         host,
         port: 22,
-        username,
-        privateKey: keyPair.private_key,
+        privateKey: cleanedPrivateKey,
+        usernames: usernamesToTry,
         readyTimeout: 30000,
         keepaliveInterval: 30000,
         keepaliveCountMax: 3,
@@ -310,7 +354,7 @@ class SSHService {
           ],
           compress: ['none']
         }
-      });
+      }, 0, connectionId);
 
     } catch (error) {
       console.error('❌ SSH connection setup failed:', error);
@@ -318,82 +362,267 @@ class SSHService {
         message: 'Failed to setup SSH connection',
         details: error.message 
       });
+      // Clean up any partial connection
+      this.cleanupConnection(connectionId);
     }
   }
 
-  private isValidPrivateKey(privateKey: string): boolean {
-    // Check for common private key formats
-    const validHeaders = [
-      '-----BEGIN RSA PRIVATE KEY-----',
-      '-----BEGIN PRIVATE KEY-----',
-      '-----BEGIN OPENSSH PRIVATE KEY-----',
-      '-----BEGIN EC PRIVATE KEY-----',
-      '-----BEGIN DSA PRIVATE KEY-----'
+  private cleanPrivateKey(privateKey: string): string | null {
+    try {
+      // Remove any extra whitespace and normalize line endings
+      let cleaned = privateKey.trim().replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      
+      // Check for common private key formats
+      const validHeaders = [
+        '-----BEGIN RSA PRIVATE KEY-----',
+        '-----BEGIN PRIVATE KEY-----',
+        '-----BEGIN OPENSSH PRIVATE KEY-----',
+        '-----BEGIN EC PRIVATE KEY-----',
+        '-----BEGIN DSA PRIVATE KEY-----'
+      ];
+      
+      const validFooters = [
+        '-----END RSA PRIVATE KEY-----',
+        '-----END PRIVATE KEY-----',
+        '-----END OPENSSH PRIVATE KEY-----',
+        '-----END EC PRIVATE KEY-----',
+        '-----END DSA PRIVATE KEY-----'
+      ];
+      
+      // Find matching header and footer
+      let hasValidFormat = false;
+      for (let i = 0; i < validHeaders.length; i++) {
+        if (cleaned.includes(validHeaders[i]) && cleaned.includes(validFooters[i])) {
+          hasValidFormat = true;
+          break;
+        }
+      }
+      
+      if (!hasValidFormat) {
+        console.error('❌ Private key does not have valid header/footer');
+        return null;
+      }
+      
+      // Ensure proper line breaks after header and before footer
+      validHeaders.forEach(header => {
+        if (cleaned.includes(header)) {
+          cleaned = cleaned.replace(header, header + '\n');
+        }
+      });
+      
+      validFooters.forEach(footer => {
+        if (cleaned.includes(footer)) {
+          cleaned = cleaned.replace(footer, '\n' + footer);
+        }
+      });
+      
+      // Remove duplicate newlines
+      cleaned = cleaned.replace(/\n\n+/g, '\n');
+      
+      // Ensure it ends with a newline
+      if (!cleaned.endsWith('\n')) {
+        cleaned += '\n';
+      }
+      
+      console.log(`🔐 Private key cleaned successfully (${cleaned.length} chars)`);
+      return cleaned;
+      
+    } catch (error) {
+      console.error('❌ Error cleaning private key:', error);
+      return null;
+    }
+  }
+
+  private getUsernamesForInstance(defaultUsername: string, instance: any): string[] {
+    // Common usernames for different AMI types
+    const commonUsernames = [
+      defaultUsername,
+      'ec2-user',    // Amazon Linux, Amazon Linux 2, Red Hat, SUSE
+      'ubuntu',      // Ubuntu
+      'admin',       // Debian
+      'centos',      // CentOS
+      'fedora',      // Fedora
+      'root'         // Some custom AMIs (less common)
     ];
     
-    const trimmedKey = privateKey.trim();
-    return validHeaders.some(header => trimmedKey.startsWith(header));
+    // Remove duplicates and return
+    return [...new Set(commonUsernames)];
+  }
+
+  private trySSHConnection(sshClient: Client, config: any, usernameIndex: number, connectionId: string) {
+    if (usernameIndex >= config.usernames.length) {
+      // All usernames failed
+      console.error(`❌ All usernames failed for SSH connection: ${connectionId}`);
+      return;
+    }
+    
+    const currentUsername = config.usernames[usernameIndex];
+    console.log(`🔑 Trying SSH connection with username: ${currentUsername} (attempt ${usernameIndex + 1}/${config.usernames.length}) for ${connectionId}`);
+    
+    const connectionConfig = {
+      host: config.host,
+      port: config.port,
+      username: currentUsername,
+      privateKey: config.privateKey,
+      readyTimeout: config.readyTimeout,
+      keepaliveInterval: config.keepaliveInterval,
+      keepaliveCountMax: config.keepaliveCountMax,
+      algorithms: config.algorithms,
+      debug: (info: string) => {
+        console.log(`🔍 SSH Debug (${currentUsername}): ${info}`);
+      }
+    };
+    
+    // Remove previous listeners to avoid conflicts
+    sshClient.removeAllListeners('error');
+    
+    // Add error handler for this attempt
+    sshClient.once('error', (err) => {
+      console.log(`❌ SSH attempt ${usernameIndex + 1} failed with ${currentUsername} for ${connectionId}: ${err.message}`);
+      
+      if (err.message.includes('authentication') || err.message.includes('Authentication')) {
+        // Authentication failed, try next username
+        console.log(`🔄 Authentication failed for ${currentUsername}, trying next username...`);
+        setTimeout(() => {
+          this.trySSHConnection(sshClient, config, usernameIndex + 1, connectionId);
+        }, 1000);
+      } else {
+        // Other error, don't retry
+        console.error(`❌ Non-authentication error for ${connectionId}: ${err.message}`);
+      }
+    });
+    
+    sshClient.connect(connectionConfig);
   }
 
   private handleSSHInput(socket: any, data: { input: string }) {
     const connectionId = this.findConnectionBySocket(socket.id);
+    
+    console.log(`📝 SSH Input received from socket ${socket.id}`);
+    console.log(`🔍 Looking for connection ID: ${connectionId}`);
+    console.log(`📊 Current connections: ${Array.from(this.connections.keys()).join(', ')}`);
+    
     if (!connectionId) {
-      console.warn('⚠️ No active SSH connection for input');
-      socket.emit('ssh:error', { message: 'No active SSH connection' });
+      console.warn(`⚠️ No connection ID found for socket: ${socket.id}`);
+      console.log(`📊 Available connections:`);
+      this.connections.forEach((conn, id) => {
+        console.log(`  - ${id}: socket ${conn.socket.id}, instance ${conn.instanceId}, authenticated: ${conn.isAuthenticated}, hasStream: ${!!conn.stream}`);
+      });
+      socket.emit('ssh:error', { message: 'No active SSH connection found. Please reconnect.' });
       return;
     }
 
     const connection = this.connections.get(connectionId);
-    if (connection && connection.stream && !connection.stream.destroyed) {
+    if (!connection) {
+      console.warn(`⚠️ Connection not found for ID: ${connectionId}`);
+      socket.emit('ssh:error', { message: 'SSH connection not found. Please reconnect.' });
+      return;
+    }
+
+    if (!connection.isAuthenticated) {
+      console.warn(`⚠️ Connection not authenticated yet: ${connectionId}`);
+      socket.emit('ssh:error', { message: 'SSH connection not ready. Please wait for authentication to complete.' });
+      return;
+    }
+
+    if (!connection.stream) {
+      console.warn(`⚠️ Stream not available for connection: ${connectionId}`);
+      socket.emit('ssh:error', { message: 'Shell session not available. Please reconnect.' });
+      return;
+    }
+
+    if (connection.stream.destroyed) {
+      console.warn(`⚠️ Stream destroyed for connection: ${connectionId}`);
+      socket.emit('ssh:error', { message: 'Shell session has been closed. Please reconnect.' });
+      return;
+    }
+
+    try {
+      console.log(`✅ Sending input to stream for connection: ${connectionId}`);
+      console.log(`📝 Input data: ${JSON.stringify(data.input)} (length: ${data.input.length})`);
       connection.stream.write(data.input);
-    } else {
-      console.warn('⚠️ Stream not available for input');
-      socket.emit('ssh:error', { message: 'Shell session not available' });
+    } catch (error) {
+      console.error(`❌ Error writing to stream for ${connectionId}:`, error);
+      socket.emit('ssh:error', { message: 'Failed to send input to shell. Please reconnect.' });
     }
   }
 
   private handleSSHResize(socket: any, data: { cols: number; rows: number }) {
     const connectionId = this.findConnectionBySocket(socket.id);
-    if (!connectionId) return;
+    if (!connectionId) {
+      console.warn(`⚠️ No connection found for resize from socket: ${socket.id}`);
+      return;
+    }
 
     const connection = this.connections.get(connectionId);
     if (connection && connection.stream && !connection.stream.destroyed) {
-      console.log(`📐 Resizing terminal: ${data.cols}x${data.rows}`);
-      connection.stream.setWindow(data.rows, data.cols);
+      console.log(`📐 Resizing terminal: ${data.cols}x${data.rows} for connection: ${connectionId}`);
+      try {
+        connection.stream.setWindow(data.rows, data.cols);
+      } catch (error) {
+        console.error(`❌ Error resizing terminal for ${connectionId}:`, error);
+      }
     }
   }
 
   private handleDisconnect(socket: any) {
-    const connectionId = this.findConnectionBySocket(socket.id);
-    if (connectionId) {
+    console.log(`🔌 Handling disconnect for socket: ${socket.id}`);
+    
+    // Find all connections for this socket
+    const connectionsToCleanup: string[] = [];
+    this.connections.forEach((connection, connectionId) => {
+      if (connection.socket.id === socket.id) {
+        connectionsToCleanup.push(connectionId);
+      }
+    });
+
+    console.log(`🧹 Found ${connectionsToCleanup.length} connections to cleanup for socket ${socket.id}`);
+    
+    // Cleanup all connections for this socket
+    connectionsToCleanup.forEach(connectionId => {
       this.cleanupConnection(connectionId);
-    }
+    });
   }
 
   private findConnectionBySocket(socketId: string): string | null {
+    console.log(`🔍 Finding connection for socket: ${socketId}`);
+    console.log(`📊 Searching through ${this.connections.size} connections`);
+    
     for (const [connectionId, connection] of this.connections) {
+      console.log(`  - Checking connection ${connectionId}: socket ${connection.socket.id}, authenticated: ${connection.isAuthenticated}`);
       if (connection.socket.id === socketId) {
+        console.log(`✅ Found connection: ${connectionId}`);
         return connectionId;
       }
     }
+    
+    console.log(`❌ No connection found for socket: ${socketId}`);
     return null;
   }
 
   private cleanupConnection(connectionId: string) {
+    console.log(`🧹 Cleaning up connection: ${connectionId}`);
+    
     const connection = this.connections.get(connectionId);
     if (connection) {
       try {
         if (connection.stream && !connection.stream.destroyed) {
+          console.log(`🔚 Ending stream for connection: ${connectionId}`);
           connection.stream.end();
         }
         if (connection.sshClient) {
+          console.log(`🔚 Ending SSH client for connection: ${connectionId}`);
           connection.sshClient.end();
         }
       } catch (error) {
-        console.error('Error cleaning up SSH connection:', error);
+        console.error(`❌ Error cleaning up SSH connection ${connectionId}:`, error);
       }
+      
       this.connections.delete(connectionId);
-      console.log(`🧹 Cleaned up SSH connection: ${connectionId}`);
+      console.log(`✅ Connection ${connectionId} cleaned up successfully`);
+      console.log(`📊 Remaining connections: ${this.connections.size}`);
+    } else {
+      console.warn(`⚠️ Connection ${connectionId} not found for cleanup`);
     }
   }
 
@@ -413,14 +642,26 @@ class SSHService {
 
   // Public method to disconnect all connections for an instance
   public disconnectInstance(instanceId: string) {
-    for (const [connectionId, connection] of this.connections) {
+    console.log(`🔌 Disconnecting all connections for instance: ${instanceId}`);
+    
+    const connectionsToDisconnect: string[] = [];
+    this.connections.forEach((connection, connectionId) => {
       if (connection.instanceId === instanceId) {
+        connectionsToDisconnect.push(connectionId);
+      }
+    });
+
+    console.log(`🔌 Found ${connectionsToDisconnect.length} connections to disconnect for instance ${instanceId}`);
+    
+    connectionsToDisconnect.forEach(connectionId => {
+      const connection = this.connections.get(connectionId);
+      if (connection) {
         connection.socket.emit('ssh:disconnected', { 
           message: 'Instance connection terminated by server' 
         });
         this.cleanupConnection(connectionId);
       }
-    }
+    });
   }
 }
 

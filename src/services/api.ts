@@ -6,7 +6,8 @@ import {
   SecurityGroup, 
   SSHKeyPair, 
   EBSVolume,
-  InstanceCreationRequest 
+  InstanceCreationRequest,
+  AMI
 } from '../types/aws';
 
 const API_BASE_URL = 'http://localhost:3001/api';
@@ -38,6 +39,11 @@ export const getRegions = async (): Promise<AWSRegion[]> => {
 
 export const getInstanceTypes = async (region: string): Promise<InstanceType[]> => {
   const response = await api.get(`/aws/instance-types?region=${region}`);
+  return response.data;
+};
+
+export const getAMIs = async (region: string): Promise<AMI[]> => {
+  const response = await api.get(`/aws/amis?region=${region}`);
   return response.data;
 };
 

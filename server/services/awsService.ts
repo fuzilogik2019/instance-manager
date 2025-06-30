@@ -21,13 +21,14 @@ import {
   DeleteSecurityGroupCommand,
   DescribeImagesCommand,
   DescribeAvailabilityZonesCommand,
+  DescribeInstanceStatusCommand,
   AuthorizeSecurityGroupIngressCommand,
   RevokeSecurityGroupIngressCommand,
   Instance,
   InstanceType as AWSInstanceType,
 } from '@aws-sdk/client-ec2';
 import { createEC2Client, isAWSConfigured } from '../config/aws.js';
-import { InstanceCreationRequest, EC2Instance, AWSRegion, InstanceType } from '../../src/types/aws.js';
+import { InstanceCreationRequest, EC2Instance, AWSRegion, InstanceType, AMI } from '../../src/types/aws.js';
 
 export class AWSService {
   private ec2Client: EC2Client | null;
@@ -42,7 +43,7 @@ export class AWSService {
     }
   }
 
-  // Get all instances from AWS
+  // Get all instances from AWS with status checks
   async getAllInstances(): Promise<EC2Instance[]> {
     if (this.mockMode) {
       return this.getMockInstances();
@@ -97,11 +98,27 @@ export class AWSService {
                 deleteOnTermination: bdm.Ebs?.DeleteOnTermination || false,
               })) || [];
 
+              // Get status checks for running instances
+              let statusChecks = undefined;
+              if (instance.State?.Name === 'running') {
+                try {
+                  statusChecks = await this.getInstanceStatusChecks(instance.InstanceId!);
+                } catch (statusError) {
+                  console.warn(`Failed to get status checks for ${instance.InstanceId}:`, statusError.message);
+                }
+              }
+
+              // Determine the actual state including initialization
+              let actualState = this.mapInstanceState(instance.State?.Name || 'unknown');
+              if (actualState === 'running' && statusChecks && !statusChecks.isSSHReady) {
+                actualState = 'initializing';
+              }
+
               const ec2Instance: EC2Instance = {
                 id: instance.InstanceId!,
                 name: instanceName,
                 instanceType: instance.InstanceType!,
-                state: this.mapInstanceState(instance.State?.Name || 'unknown'),
+                state: actualState,
                 region: instance.Placement?.AvailabilityZone?.slice(0, -1) || 'us-east-1',
                 availabilityZone: instance.Placement?.AvailabilityZone || 'us-east-1a',
                 publicIp: instance.PublicIpAddress,
@@ -112,6 +129,7 @@ export class AWSService {
                 isSpotInstance: !!instance.SpotInstanceRequestId,
                 launchTime: instance.LaunchTime || new Date(),
                 tags,
+                statusChecks,
               };
 
               instances.push(ec2Instance);
@@ -132,6 +150,48 @@ export class AWSService {
     }
   }
 
+  // Get instance status checks
+  private async getInstanceStatusChecks(instanceId: string) {
+    if (!this.ec2Client) return null;
+
+    try {
+      const command = new DescribeInstanceStatusCommand({
+        InstanceIds: [instanceId],
+        IncludeAllInstances: true
+      });
+
+      const response = await this.ec2Client.send(command);
+      const status = response.InstanceStatuses?.[0];
+
+      if (!status) {
+        return {
+          instanceStatus: 'unknown',
+          systemStatus: 'unknown',
+          isSSHReady: false
+        };
+      }
+
+      const instanceStatus = status.InstanceStatus?.Status || 'unknown';
+      const systemStatus = status.SystemStatus?.Status || 'unknown';
+      
+      // SSH is ready when both instance and system status are 'ok'
+      const isSSHReady = instanceStatus === 'ok' && systemStatus === 'ok';
+
+      return {
+        instanceStatus,
+        systemStatus,
+        isSSHReady
+      };
+    } catch (error) {
+      console.warn('Failed to get instance status checks:', error);
+      return {
+        instanceStatus: 'unknown',
+        systemStatus: 'unknown',
+        isSSHReady: false
+      };
+    }
+  }
+
   // Map AWS instance states to our internal states
   private mapInstanceState(awsState: string): EC2Instance['state'] {
     switch (awsState) {
@@ -149,6 +209,173 @@ export class AWSService {
         return 'stopped';
       default:
         return 'pending';
+    }
+  }
+
+  // Get available AMIs for a region
+  async getAMIs(region: string): Promise<AMI[]> {
+    if (this.mockMode) {
+      return this.getMockAMIs();
+    }
+
+    const regionClient = createEC2Client(region);
+    if (!regionClient) {
+      throw new Error('AWS client not configured');
+    }
+
+    try {
+      console.log(`Getting AMIs for region: ${region}`);
+      
+      // Get popular AMIs from different owners
+      const amiPromises = [
+        // Amazon Linux 2
+        this.getAMIsByOwnerAndName(regionClient, 'amazon', 'amzn2-ami-hvm-*-x86_64-gp2', 'amazon-linux'),
+        // Ubuntu
+        this.getAMIsByOwnerAndName(regionClient, '099720109477', 'ubuntu/images/hvm-ssd/ubuntu-*-amd64-server-*', 'ubuntu'),
+        // Windows
+        this.getAMIsByOwnerAndName(regionClient, 'amazon', 'Windows_Server-*-English-Full-Base-*', 'windows'),
+        // Red Hat
+        this.getAMIsByOwnerAndName(regionClient, '309956199498', 'RHEL-*-x86_64-*', 'redhat'),
+        // SUSE
+        this.getAMIsByOwnerAndName(regionClient, '013907871322', 'suse-sles-*-v*-hvm-ssd-x86_64', 'suse'),
+        // Debian
+        this.getAMIsByOwnerAndName(regionClient, '136693071363', 'debian-*-amd64-*', 'debian'),
+      ];
+
+      const amiResults = await Promise.allSettled(amiPromises);
+      const allAMIs: AMI[] = [];
+
+      amiResults.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+          allAMIs.push(...result.value);
+        } else {
+          console.warn(`Failed to get AMIs for type ${index}:`, result.reason);
+        }
+      });
+
+      // Sort by OS type and creation date
+      allAMIs.sort((a, b) => {
+        if (a.osType !== b.osType) {
+          return a.osType.localeCompare(b.osType);
+        }
+        return new Date(b.creationDate).getTime() - new Date(a.creationDate).getTime();
+      });
+
+      console.log(`Returning ${allAMIs.length} AMIs for region ${region}`);
+      return allAMIs;
+    } catch (error) {
+      console.error('Failed to get AMIs:', error);
+      return this.getMockAMIs();
+    }
+  }
+
+  private async getAMIsByOwnerAndName(client: EC2Client, owner: string, namePattern: string, osType: string): Promise<AMI[]> {
+    try {
+      const command = new DescribeImagesCommand({
+        Owners: [owner],
+        Filters: [
+          {
+            Name: 'name',
+            Values: [namePattern],
+          },
+          {
+            Name: 'state',
+            Values: ['available'],
+          },
+          {
+            Name: 'architecture',
+            Values: ['x86_64'],
+          },
+        ],
+        MaxResults: 20, // Limit to most recent
+      });
+
+      const response = await client.send(command);
+      
+      if (!response.Images) {
+        return [];
+      }
+
+      // Sort by creation date and take the most recent ones
+      const sortedImages = response.Images
+        .sort((a, b) => {
+          const dateA = new Date(a.CreationDate || 0);
+          const dateB = new Date(b.CreationDate || 0);
+          return dateB.getTime() - dateA.getTime();
+        })
+        .slice(0, 5); // Take top 5 most recent
+
+      return sortedImages.map(image => ({
+        id: image.ImageId!,
+        name: image.Name!,
+        description: image.Description || '',
+        platform: this.getPlatformFromImage(image, osType),
+        osType: osType as any,
+        osVersion: this.extractVersionFromName(image.Name!, osType),
+        architecture: image.Architecture as 'x86_64' | 'arm64',
+        virtualizationType: image.VirtualizationType as 'hvm' | 'paravirtual',
+        defaultUsername: this.getDefaultUsername(osType),
+        isPublic: image.Public || false,
+        creationDate: image.CreationDate!,
+        imageLocation: image.ImageLocation,
+      }));
+    } catch (error) {
+      console.warn(`Failed to get AMIs for ${osType}:`, error);
+      return [];
+    }
+  }
+
+  private getPlatformFromImage(image: any, osType: string): 'linux' | 'windows' | 'macos' {
+    if (osType === 'windows' || image.Platform === 'windows') {
+      return 'windows';
+    }
+    return 'linux';
+  }
+
+  private extractVersionFromName(name: string, osType: string): string {
+    switch (osType) {
+      case 'amazon-linux':
+        if (name.includes('amzn2')) return '2';
+        if (name.includes('amzn-ami')) return '1';
+        return '2';
+      case 'ubuntu':
+        const ubuntuMatch = name.match(/ubuntu-(\d+\.\d+)/i);
+        return ubuntuMatch ? ubuntuMatch[1] : '22.04';
+      case 'windows':
+        if (name.includes('2022')) return '2022';
+        if (name.includes('2019')) return '2019';
+        if (name.includes('2016')) return '2016';
+        return '2022';
+      case 'redhat':
+        const rhelMatch = name.match(/RHEL-(\d+)/i);
+        return rhelMatch ? rhelMatch[1] : '9';
+      case 'suse':
+        const suseMatch = name.match(/sles-(\d+)/i);
+        return suseMatch ? suseMatch[1] : '15';
+      case 'debian':
+        const debianMatch = name.match(/debian-(\d+)/i);
+        return debianMatch ? debianMatch[1] : '12';
+      default:
+        return 'Latest';
+    }
+  }
+
+  private getDefaultUsername(osType: string): string {
+    switch (osType) {
+      case 'amazon-linux':
+        return 'ec2-user';
+      case 'ubuntu':
+        return 'ubuntu';
+      case 'windows':
+        return 'Administrator';
+      case 'redhat':
+        return 'ec2-user';
+      case 'suse':
+        return 'ec2-user';
+      case 'debian':
+        return 'admin';
+      default:
+        return 'ec2-user';
     }
   }
 
@@ -178,6 +405,11 @@ export class AWSService {
         isSpotInstance: false,
         launchTime: new Date(Date.now() - 3600000), // 1 hour ago
         tags: { Name: 'Mock Web Server', Environment: 'Development' },
+        statusChecks: {
+          instanceStatus: 'ok',
+          systemStatus: 'ok',
+          isSSHReady: true
+        }
       },
       {
         id: 'i-0987654321fedcba0',
@@ -205,6 +437,50 @@ export class AWSService {
     ];
   }
 
+  private getMockAMIs(): AMI[] {
+    return [
+      {
+        id: 'ami-0abcdef1234567890',
+        name: 'amzn2-ami-hvm-2.0.20231116.0-x86_64-gp2',
+        description: 'Amazon Linux 2 AMI (HVM) - Kernel 5.10, SSD Volume Type',
+        platform: 'linux',
+        osType: 'amazon-linux',
+        osVersion: '2',
+        architecture: 'x86_64',
+        virtualizationType: 'hvm',
+        defaultUsername: 'ec2-user',
+        isPublic: true,
+        creationDate: '2023-11-16T00:00:00.000Z',
+      },
+      {
+        id: 'ami-0123456789abcdef0',
+        name: 'ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-20231120',
+        description: 'Canonical, Ubuntu, 22.04 LTS, amd64 jammy image build on 2023-11-20',
+        platform: 'linux',
+        osType: 'ubuntu',
+        osVersion: '22.04',
+        architecture: 'x86_64',
+        virtualizationType: 'hvm',
+        defaultUsername: 'ubuntu',
+        isPublic: true,
+        creationDate: '2023-11-20T00:00:00.000Z',
+      },
+      {
+        id: 'ami-0fedcba9876543210',
+        name: 'Windows_Server-2022-English-Full-Base-2023.11.15',
+        description: 'Microsoft Windows Server 2022 Full Locale English AMI provided by Amazon',
+        platform: 'windows',
+        osType: 'windows',
+        osVersion: '2022',
+        architecture: 'x86_64',
+        virtualizationType: 'hvm',
+        defaultUsername: 'Administrator',
+        isPublic: true,
+        creationDate: '2023-11-15T00:00:00.000Z',
+      },
+    ];
+  }
+
   // Instance Management
   async launchInstance(request: InstanceCreationRequest): Promise<{ instanceId: string; publicIp?: string; privateIp: string; availabilityZone: string }> {
     if (this.mockMode) {
@@ -216,10 +492,7 @@ export class AWSService {
     }
 
     try {
-      // Get the latest Amazon Linux 2 AMI for the region
-      const amiId = await this.getLatestAmazonLinuxAMI(request.region);
-      
-      console.log(`Launching instance with AMI: ${amiId} in region: ${request.region}`);
+      console.log(`Launching instance with AMI: ${request.amiId} in region: ${request.region}`);
 
       // Prepare tags - avoid duplicates
       const tags = [];
@@ -241,7 +514,7 @@ export class AWSService {
       });
 
       const command = new RunInstancesCommand({
-        ImageId: amiId,
+        ImageId: request.amiId,
         InstanceType: request.instanceType as any,
         MinCount: 1,
         MaxCount: 1,
@@ -349,55 +622,6 @@ export class AWSService {
       } catch (error) {
         console.error(`Failed to attach volume ${volumeId}:`, error);
       }
-    }
-  }
-
-  private async getLatestAmazonLinuxAMI(region: string): Promise<string> {
-    const regionClient = createEC2Client(region);
-    if (!regionClient) {
-      throw new Error('AWS client not configured');
-    }
-
-    try {
-      const command = new DescribeImagesCommand({
-        Owners: ['amazon'],
-        Filters: [
-          {
-            Name: 'name',
-            Values: ['amzn2-ami-hvm-*-x86_64-gp2'],
-          },
-          {
-            Name: 'state',
-            Values: ['available'],
-          },
-          {
-            Name: 'architecture',
-            Values: ['x86_64'],
-          },
-        ],
-      });
-
-      const response = await regionClient.send(command);
-      
-      if (!response.Images || response.Images.length === 0) {
-        throw new Error('No Amazon Linux 2 AMIs found');
-      }
-
-      // Sort by creation date and get the latest
-      const sortedImages = response.Images.sort((a, b) => {
-        const dateA = new Date(a.CreationDate || 0);
-        const dateB = new Date(b.CreationDate || 0);
-        return dateB.getTime() - dateA.getTime();
-      });
-
-      const latestAMI = sortedImages[0];
-      console.log(`Using AMI: ${latestAMI.ImageId} (${latestAMI.Name})`);
-      
-      return latestAMI.ImageId!;
-    } catch (error) {
-      console.error('Failed to get latest AMI, using fallback:', error);
-      // Fallback to known AMI IDs
-      return this.getAMIForRegion(region);
     }
   }
 
@@ -1217,24 +1441,6 @@ export class AWSService {
       iops: volumeConfig.iops,
       throughput: volumeConfig.throughput,
     };
-  }
-
-  private getAMIForRegion(region: string): string {
-    // Updated Amazon Linux 2 AMI IDs for different regions (as of 2024)
-    const amiMap: Record<string, string> = {
-      'us-east-1': 'ami-0c02fb55956c7d316',
-      'us-east-2': 'ami-0f924dc71d44d23e2',
-      'us-west-1': 'ami-0d382e80be7ffdae5',
-      'us-west-2': 'ami-0c2d3e23d757c2c99',
-      'eu-west-1': 'ami-0c9c942bd7bf113a2',
-      'eu-west-2': 'ami-0fb391cce7a602d1f',
-      'eu-central-1': 'ami-0e7e134863fac4946',
-      'ap-southeast-1': 'ami-0c802847a7dd848c0',
-      'ap-southeast-2': 'ami-0b7dcd6e6fd797935',
-      'ap-northeast-1': 'ami-0218d08a1f9dac831',
-    };
-
-    return amiMap[region] || amiMap['us-east-1'];
   }
 }
 
