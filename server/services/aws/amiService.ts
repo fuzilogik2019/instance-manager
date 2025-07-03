@@ -102,23 +102,26 @@ export class AMIService {
   // ==========================================
   private async getUbuntuAMIs(client: EC2Client, region: string, version: string): Promise<AMI[]> {
     try {
-      console.log(`🔍 Fetching Ubuntu ${version} AMIs for ${region}...`);
-      
+      console.log(`🔍 [DEBUG] getUbuntuAMIs: version=${version}, region=${region}`);
+      if (!client) {
+        console.error('[DEBUG] EC2 client no válido.');
+      }
       // Use hardcoded AMI IDs for us-east-1 to ensure they're found
+      /*
       if (region === 'us-east-1') {
         const hardcodedAMIs = this.getHardcodedUbuntuAMIs(version);
         if (hardcodedAMIs.length > 0) {
-          console.log(`✅ Using hardcoded Ubuntu ${version} AMIs for us-east-1`);
+          console.log(`✅ [DEBUG] Usando AMIs hardcodeadas de Ubuntu ${version} para us-east-1`);
           return hardcodedAMIs;
         }
       }
-
+      */
       // Fallback to dynamic search
       const searchPatterns = this.getUbuntuSearchPatterns(version);
-      
+      console.log(`[DEBUG] Patrones de búsqueda para Ubuntu ${version}:`, searchPatterns);
       for (const pattern of searchPatterns) {
         try {
-          const command = new DescribeImagesCommand({
+          const commandParams = {
             Owners: ['099720109477'], // Canonical
             Filters: [
               {
@@ -129,19 +132,21 @@ export class AMIService {
                 Name: 'state',
                 Values: ['available'],
               },
-              {
-                Name: 'architecture',
-                Values: ['x86_64'],
-              },
             ],
-            MaxResults: 20,
-          });
-
+          };
+          console.log(`[DEBUG] Ejecutando DescribeImagesCommand con parámetros:`, JSON.stringify(commandParams, null, 2));
+          const command = new DescribeImagesCommand(commandParams);
           const response = await client.send(command);
-          
+          if (response.Images) {
+            console.log(`[DEBUG] Respuesta de AWS: ${response.Images.length} imágenes encontradas para patrón '${pattern}'.`);
+            if (response.Images.length > 0) {
+              console.log(`[DEBUG] IDs de las imágenes encontradas:`, response.Images.map(img => img.ImageId));
+            }
+          } else {
+            console.log(`[DEBUG] Respuesta de AWS: Images es undefined para patrón '${pattern}'.`);
+          }
           if (response.Images && response.Images.length > 0) {
             console.log(`✅ Found ${response.Images.length} Ubuntu ${version} AMIs with pattern: ${pattern}`);
-            
             // Sort by creation date and take the most recent ones
             const sortedImages = response.Images
               .sort((a, b) => {
@@ -150,7 +155,6 @@ export class AMIService {
                 return dateB.getTime() - dateA.getTime();
               })
               .slice(0, 5); // Take top 5 most recent
-
             return sortedImages.map(image => ({
               id: image.ImageId!,
               name: image.Name!,
@@ -158,24 +162,24 @@ export class AMIService {
               platform: 'linux' as const,
               osType: 'ubuntu' as const,
               osVersion: version,
-              architecture: 'x86_64' as const,
+              architecture: image.Architecture as 'x86_64' | 'arm64',
               virtualizationType: 'hvm' as const,
               defaultUsername: 'ubuntu',
               isPublic: image.Public || false,
               creationDate: image.CreationDate!,
               imageLocation: image.ImageLocation,
+              rootDeviceName: image.RootDeviceName || '/dev/xvda',
             }));
           }
         } catch (patternError) {
-          console.warn(`⚠️ Pattern ${pattern} failed:`, patternError.message);
+          console.warn(`⚠️ [DEBUG] Pattern ${pattern} failed:`, patternError.message);
           continue;
         }
       }
-
-      console.warn(`⚠️ No Ubuntu ${version} AMIs found for ${region}, using hardcoded fallback`);
+      console.warn(`[DEBUG] No se encontraron AMIs de Ubuntu ${version} para la región ${region}, usando fallback hardcodeado.`);
       return this.getHardcodedUbuntuAMIs(version);
     } catch (error) {
-      console.error(`❌ Failed to get Ubuntu ${version} AMIs:`, error);
+      console.error(`[DEBUG] Error al obtener AMIs de Ubuntu ${version}:`, error);
       return this.getHardcodedUbuntuAMIs(version);
     }
   }
@@ -198,6 +202,7 @@ export class AMIService {
           defaultUsername: 'ubuntu',
           isPublic: true,
           creationDate: '2024-01-26T00:00:00.000Z',
+          rootDeviceName: '/dev/xvda',
         },
         {
           id: 'ami-050499786ebf55a6a', // ARM Ubuntu 22.04 LTS
@@ -211,6 +216,7 @@ export class AMIService {
           defaultUsername: 'ubuntu',
           isPublic: true,
           creationDate: '2024-01-26T00:00:00.000Z',
+          rootDeviceName: '/dev/xvda',
         },
       ],
       '20.04': [
@@ -226,6 +232,7 @@ export class AMIService {
           defaultUsername: 'ubuntu',
           isPublic: true,
           creationDate: '2023-12-07T00:00:00.000Z',
+          rootDeviceName: '/dev/xvda',
         },
       ],
     };
@@ -272,13 +279,9 @@ export class AMIService {
             Values: ['available'],
           },
         ],
-        MaxResults: 10,
       });
-
       const response = await client.send(command);
-      
       if (!response.Images) return [];
-
       return response.Images
         .sort((a, b) => new Date(b.CreationDate || 0).getTime() - new Date(a.CreationDate || 0).getTime())
         .slice(0, 3)
@@ -289,12 +292,13 @@ export class AMIService {
           platform: 'linux' as const,
           osType: 'amazon-linux' as const,
           osVersion: '2',
-          architecture: 'x86_64' as const,
+          architecture: image.Architecture as 'x86_64' | 'arm64',
           virtualizationType: 'hvm' as const,
           defaultUsername: 'ec2-user',
           isPublic: image.Public || false,
           creationDate: image.CreationDate!,
           imageLocation: image.ImageLocation,
+          rootDeviceName: image.RootDeviceName || '/dev/xvda',
         }));
     } catch (error) {
       console.warn('⚠️ Failed to get Amazon Linux AMIs:', error);
@@ -316,13 +320,9 @@ export class AMIService {
             Values: ['available'],
           },
         ],
-        MaxResults: 5,
       });
-
       const response = await client.send(command);
-      
       if (!response.Images) return [];
-
       return response.Images
         .sort((a, b) => new Date(b.CreationDate || 0).getTime() - new Date(a.CreationDate || 0).getTime())
         .slice(0, 2)
@@ -333,12 +333,13 @@ export class AMIService {
           platform: 'windows' as const,
           osType: 'windows' as const,
           osVersion: '2022',
-          architecture: 'x86_64' as const,
+          architecture: image.Architecture as 'x86_64' | 'arm64',
           virtualizationType: 'hvm' as const,
           defaultUsername: 'Administrator',
           isPublic: image.Public || false,
           creationDate: image.CreationDate!,
           imageLocation: image.ImageLocation,
+          rootDeviceName: image.RootDeviceName || '/dev/xvda',
         }));
     } catch (error) {
       console.warn('⚠️ Failed to get Windows AMIs:', error);
@@ -360,13 +361,9 @@ export class AMIService {
             Values: ['available'],
           },
         ],
-        MaxResults: 5,
       });
-
       const response = await client.send(command);
-      
       if (!response.Images) return [];
-
       return response.Images
         .sort((a, b) => new Date(b.CreationDate || 0).getTime() - new Date(a.CreationDate || 0).getTime())
         .slice(0, 2)
@@ -377,12 +374,13 @@ export class AMIService {
           platform: 'linux' as const,
           osType: 'redhat' as const,
           osVersion: '9',
-          architecture: 'x86_64' as const,
+          architecture: image.Architecture as 'x86_64' | 'arm64',
           virtualizationType: 'hvm' as const,
           defaultUsername: 'ec2-user',
           isPublic: image.Public || false,
           creationDate: image.CreationDate!,
           imageLocation: image.ImageLocation,
+          rootDeviceName: image.RootDeviceName || '/dev/xvda',
         }));
     } catch (error) {
       console.warn('⚠️ Failed to get Red Hat AMIs:', error);
@@ -404,13 +402,9 @@ export class AMIService {
             Values: ['available'],
           },
         ],
-        MaxResults: 5,
       });
-
       const response = await client.send(command);
-      
       if (!response.Images) return [];
-
       return response.Images
         .sort((a, b) => new Date(b.CreationDate || 0).getTime() - new Date(a.CreationDate || 0).getTime())
         .slice(0, 2)
@@ -421,12 +415,13 @@ export class AMIService {
           platform: 'linux' as const,
           osType: 'suse' as const,
           osVersion: '15',
-          architecture: 'x86_64' as const,
+          architecture: image.Architecture as 'x86_64' | 'arm64',
           virtualizationType: 'hvm' as const,
           defaultUsername: 'ec2-user',
           isPublic: image.Public || false,
           creationDate: image.CreationDate!,
           imageLocation: image.ImageLocation,
+          rootDeviceName: image.RootDeviceName || '/dev/xvda',
         }));
     } catch (error) {
       console.warn('⚠️ Failed to get SUSE AMIs:', error);
@@ -448,13 +443,9 @@ export class AMIService {
             Values: ['available'],
           },
         ],
-        MaxResults: 5,
       });
-
       const response = await client.send(command);
-      
       if (!response.Images) return [];
-
       return response.Images
         .sort((a, b) => new Date(b.CreationDate || 0).getTime() - new Date(a.CreationDate || 0).getTime())
         .slice(0, 2)
@@ -465,12 +456,13 @@ export class AMIService {
           platform: 'linux' as const,
           osType: 'debian' as const,
           osVersion: '12',
-          architecture: 'x86_64' as const,
+          architecture: image.Architecture as 'x86_64' | 'arm64',
           virtualizationType: 'hvm' as const,
           defaultUsername: 'admin',
           isPublic: image.Public || false,
           creationDate: image.CreationDate!,
           imageLocation: image.ImageLocation,
+          rootDeviceName: image.RootDeviceName || '/dev/xvda',
         }));
     } catch (error) {
       console.warn('⚠️ Failed to get Debian AMIs:', error);
@@ -492,13 +484,9 @@ export class AMIService {
             Values: ['available'],
           },
         ],
-        MaxResults: 5, // FIXED: Changed from 3 to 5 (minimum required)
       });
-
       const response = await client.send(command);
-      
       if (!response.Images) return [];
-
       return response.Images
         .sort((a, b) => new Date(b.CreationDate || 0).getTime() - new Date(a.CreationDate || 0).getTime())
         .slice(0, 1)
@@ -509,12 +497,13 @@ export class AMIService {
           platform: 'macos' as const,
           osType: 'macos' as const,
           osVersion: 'Latest',
-          architecture: 'x86_64' as const,
+          architecture: image.Architecture as 'x86_64' | 'arm64',
           virtualizationType: 'hvm' as const,
           defaultUsername: 'ec2-user',
           isPublic: image.Public || false,
           creationDate: image.CreationDate!,
           imageLocation: image.ImageLocation,
+          rootDeviceName: image.RootDeviceName || '/dev/xvda',
         }));
     } catch (error) {
       console.warn('⚠️ Failed to get macOS AMIs:', error);
@@ -540,6 +529,7 @@ export class AMIService {
         defaultUsername: 'ubuntu',
         isPublic: true,
         creationDate: '2024-01-26T00:00:00.000Z',
+        rootDeviceName: '/dev/xvda',
       },
       // Ubuntu 22.04 LTS ARM
       {
@@ -554,6 +544,7 @@ export class AMIService {
         defaultUsername: 'ubuntu',
         isPublic: true,
         creationDate: '2024-01-26T00:00:00.000Z',
+        rootDeviceName: '/dev/xvda',
       },
       // Ubuntu 20.04 LTS (Fallback)
       {
@@ -568,6 +559,7 @@ export class AMIService {
         defaultUsername: 'ubuntu',
         isPublic: true,
         creationDate: '2023-12-07T00:00:00.000Z',
+        rootDeviceName: '/dev/xvda',
       },
       // Amazon Linux 2
       {
@@ -582,6 +574,7 @@ export class AMIService {
         defaultUsername: 'ec2-user',
         isPublic: true,
         creationDate: '2023-11-16T00:00:00.000Z',
+        rootDeviceName: '/dev/xvda',
       },
       // Windows Server 2022
       {
@@ -596,6 +589,7 @@ export class AMIService {
         defaultUsername: 'Administrator',
         isPublic: true,
         creationDate: '2023-11-15T00:00:00.000Z',
+        rootDeviceName: '/dev/xvda',
       },
       // Red Hat Enterprise Linux 9
       {
@@ -610,6 +604,7 @@ export class AMIService {
         defaultUsername: 'ec2-user',
         isPublic: true,
         creationDate: '2023-11-01T00:00:00.000Z',
+        rootDeviceName: '/dev/xvda',
       },
       // SUSE Linux Enterprise Server 15
       {
@@ -624,6 +619,7 @@ export class AMIService {
         defaultUsername: 'ec2-user',
         isPublic: true,
         creationDate: '2023-11-01T00:00:00.000Z',
+        rootDeviceName: '/dev/xvda',
       },
       // Debian 12
       {
@@ -638,6 +634,7 @@ export class AMIService {
         defaultUsername: 'admin',
         isPublic: true,
         creationDate: '2023-10-13T00:00:00.000Z',
+        rootDeviceName: '/dev/xvda',
       },
     ];
   }

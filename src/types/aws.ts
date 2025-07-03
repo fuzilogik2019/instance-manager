@@ -27,6 +27,7 @@ export interface AMI {
   isPublic: boolean;
   creationDate: string;
   imageLocation?: string;
+  rootDeviceName: string;
 }
 
 export interface EBSVolume {
@@ -107,4 +108,8 @@ export interface InstanceCreationRequest {
   tags: Record<string, string>;
   installDocker?: boolean;
   dockerImageToPull?: string;
+  rootDeviceName: string;
+  useDockerCompose?: boolean;
+  dockerComposePath?: string;
+  dockerComposeContent?: string;
 }

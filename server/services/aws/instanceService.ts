@@ -130,10 +130,14 @@ export class InstanceService {
 
       // Prepare user data script
       let userData = request.userData || '';
-      
       // Add Docker installation script if requested
       if (request.installDocker) {
-        const dockerScript = this.generateDockerInstallScript(request.dockerImageToPull);
+        let dockerScript = '';
+        if (request.useDockerCompose && request.dockerComposePath && request.dockerComposeContent) {
+          dockerScript = this.generateDockerInstallScript(undefined, request.dockerComposePath, request.dockerComposeContent);
+        } else {
+          dockerScript = this.generateDockerInstallScript(request.dockerImageToPull);
+        }
         userData = userData ? `${userData}\n\n${dockerScript}` : dockerScript;
       }
 
@@ -172,7 +176,7 @@ export class InstanceService {
         // CRITICAL: Only specify ONE block device mapping for the root volume
         BlockDeviceMappings: [
           {
-            DeviceName: '/dev/xvda', // Root volume device name
+            DeviceName: request.rootDeviceName || '/dev/xvda', // Usar el rootDeviceName del AMI
             Ebs: {
               VolumeSize: rootVolume.size,
               VolumeType: rootVolume.type,
@@ -368,7 +372,7 @@ export class InstanceService {
     }
   }
 
-  private generateDockerInstallScript(dockerImage?: string): string {
+  private generateDockerInstallScript(dockerImage?: string, dockerComposePath?: string, dockerComposeContent?: string): string {
     let script = `#!/bin/bash
 set -e
 
@@ -385,12 +389,12 @@ apt-get update -y
 
 # Install Docker dependencies
 echo "🔧 Installing Docker dependencies..."
-apt-get install -y \\
-    ca-certificates \\
-    curl \\
-    gnupg \\
-    lsb-release \\
-    wget \\
+apt-get install -y \
+    ca-certificates \
+    curl \
+    gnupg \
+    lsb-release \
+    wget \
     unzip
 
 # Add Docker's official GPG key
@@ -400,8 +404,8 @@ curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/
 
 # Set up the repository
 echo "📋 Setting up Docker repository..."
-echo \\
-  "deb [arch=\$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \\
+echo \
+  "deb [arch=\$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
   \$(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
 
 # Install Docker Engine
@@ -443,365 +447,31 @@ docker run --rm hello-world
 echo "✅ Docker installation completed successfully!"
 echo "$(date): Docker installation completed"`;
 
-    if (dockerImage) {
+    // Si se usa docker-compose, crear el archivo y ejecutarlo
+    if (dockerComposePath && dockerComposeContent) {
       script += `
 
-# Pull and run the specified Docker image
-echo "📦 Pulling and running Docker image: ${dockerImage}"
-echo "$(date): Starting Docker image deployment: ${dockerImage}"
+# Crear directorio para docker-compose
+mkdir -p ${dockerComposePath}
+chown ubuntu:ubuntu ${dockerComposePath}
 
-# Pull the image first
-echo "⬇️ Pulling Docker image..."
-docker pull ${dockerImage}
-
-# Wait for the pull to complete
-sleep 10
-
-echo "🚀 Starting container with image: ${dockerImage}"
-
-# Auto-configure and run based on common images
-if [[ "${dockerImage}" == *"minecraft"* ]]; then
-    echo "🎮 Detected Minecraft server image"
-    echo "$(date): Deploying Minecraft server"
-    
-    # Create minecraft data directory
-    mkdir -p /opt/minecraft-data
-    chown ubuntu:ubuntu /opt/minecraft-data
-    
-    # Stop any existing container
-    docker stop minecraft-server 2>/dev/null || true
-    docker rm minecraft-server 2>/dev/null || true
-    
-    # Run Minecraft server with proper configuration
-    docker run -d \\
-        --name minecraft-server \\
-        --restart unless-stopped \\
-        -p 25565:25565 \\
-        -v /opt/minecraft-data:/data \\
-        -e EULA=TRUE \\
-        -e TYPE=VANILLA \\
-        -e DIFFICULTY=normal \\
-        -e MODE=survival \\
-        -e MAX_PLAYERS=20 \\
-        -e MEMORY=2G \\
-        ${dockerImage}
-    
-    echo "🎮 Minecraft server started on port 25565"
-    echo "📁 Data stored in: /opt/minecraft-data"
-    
-elif [[ "${dockerImage}" == *"palworld"* ]]; then
-    echo "🦄 Detected Palworld server image"
-    echo "$(date): Deploying Palworld server"
-    
-    # Create palworld data directory
-    mkdir -p /opt/palworld-data
-    chown ubuntu:ubuntu /opt/palworld-data
-    
-    # Stop any existing container
-    docker stop palworld-server 2>/dev/null || true
-    docker rm palworld-server 2>/dev/null || true
-    
-    # Run Palworld server
-    docker run -d \\
-        --name palworld-server \\
-        --restart unless-stopped \\
-        -p 8211:8211/udp \\
-        -p 27015:27015/udp \\
-        -v /opt/palworld-data:/palworld \\
-        -e PUID=1000 \\
-        -e PGID=1000 \\
-        -e PLAYERS=16 \\
-        -e SERVER_PASSWORD=changeme123 \\
-        -e MULTITHREADING=true \\
-        ${dockerImage}
-    
-    echo "🦄 Palworld server started on port 8211"
-    echo "🔑 Default password: changeme123"
-    echo "📁 Data stored in: /opt/palworld-data"
-    
-elif [[ "${dockerImage}" == *"valheim"* ]]; then
-    echo "⚔️ Detected Valheim server image"
-    echo "$(date): Deploying Valheim server"
-    
-    # Create valheim data directory
-    mkdir -p /opt/valheim-data
-    chown ubuntu:ubuntu /opt/valheim-data
-    
-    # Stop any existing container
-    docker stop valheim-server 2>/dev/null || true
-    docker rm valheim-server 2>/dev/null || true
-    
-    # Run Valheim server
-    docker run -d \\
-        --name valheim-server \\
-        --restart unless-stopped \\
-        -p 2456:2456/udp \\
-        -p 2457:2457/udp \\
-        -p 2458:2458/udp \\
-        -v /opt/valheim-data:/config \\
-        -e SERVER_NAME="My Valheim Server" \\
-        -e WORLD_NAME="MyWorld" \\
-        -e SERVER_PASS="changeme123" \\
-        -e SERVER_PUBLIC=false \\
-        ${dockerImage}
-    
-    echo "⚔️ Valheim server started on ports 2456-2458"
-    echo "🔑 Default password: changeme123"
-    echo "📁 Data stored in: /opt/valheim-data"
-    
-elif [[ "${dockerImage}" == *"nginx"* ]]; then
-    echo "🌐 Detected Nginx web server"
-    echo "$(date): Deploying Nginx server"
-    
-    # Create nginx content directory
-    mkdir -p /opt/nginx-content
-    chown ubuntu:ubuntu /opt/nginx-content
-    
-    # Create a simple index.html
-    cat > /opt/nginx-content/index.html << 'EOF'
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Welcome to Nginx on AWS EC2</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 40px; background: #f4f4f4; }
-        .container { background: white; padding: 40px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        h1 { color: #333; }
-        .status { background: #e8f5e8; padding: 15px; border-radius: 4px; margin: 20px 0; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🚀 Nginx Server Running Successfully!</h1>
-        <div class="status">
-            <strong>Status:</strong> ✅ Active and running<br>
-            <strong>Server:</strong> Nginx in Docker container<br>
-            <strong>Platform:</strong> AWS EC2 Instance
-        </div>
-        <p>Your Nginx web server is now running and accessible from the internet.</p>
-        <p>You can replace this page by updating files in <code>/opt/nginx-content/</code></p>
-    </div>
-</body>
-</html>
+# Guardar el archivo docker-compose.yml
+cat > ${dockerComposePath}/docker-compose.yml << 'EOF'
+${dockerComposeContent}
 EOF
-    
-    # Stop any existing container
-    docker stop nginx-server 2>/dev/null || true
-    docker rm nginx-server 2>/dev/null || true
-    
-    # Run Nginx server
-    docker run -d \\
-        --name nginx-server \\
-        --restart unless-stopped \\
-        -p 80:80 \\
-        -p 443:443 \\
-        -v /opt/nginx-content:/usr/share/nginx/html \\
-        ${dockerImage}
-    
-    echo "🌐 Nginx server started on port 80"
-    echo "📁 Content directory: /opt/nginx-content"
-    
-elif [[ "${dockerImage}" == *"apache"* ]] || [[ "${dockerImage}" == *"httpd"* ]]; then
-    echo "🌐 Detected Apache web server"
-    echo "$(date): Deploying Apache server"
-    
-    # Create apache content directory
-    mkdir -p /opt/apache-content
-    chown ubuntu:ubuntu /opt/apache-content
-    
-    # Create a simple index.html
-    cat > /opt/apache-content/index.html << 'EOF'
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Welcome to Apache on AWS EC2</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 40px; background: #f4f4f4; }
-        .container { background: white; padding: 40px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        h1 { color: #333; }
-        .status { background: #e8f5e8; padding: 15px; border-radius: 4px; margin: 20px 0; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🚀 Apache Server Running Successfully!</h1>
-        <div class="status">
-            <strong>Status:</strong> ✅ Active and running<br>
-            <strong>Server:</strong> Apache in Docker container<br>
-            <strong>Platform:</strong> AWS EC2 Instance
-        </div>
-        <p>Your Apache web server is now running and accessible from the internet.</p>
-        <p>You can replace this page by updating files in <code>/opt/apache-content/</code></p>
-    </div>
-</body>
-</html>
-EOF
-    
-    # Stop any existing container
-    docker stop apache-server 2>/dev/null || true
-    docker rm apache-server 2>/dev/null || true
-    
-    # Run Apache server
-    docker run -d \\
-        --name apache-server \\
-        --restart unless-stopped \\
-        -p 80:80 \\
-        -p 443:443 \\
-        -v /opt/apache-content:/usr/local/apache2/htdocs \\
-        ${dockerImage}
-    
-    echo "🌐 Apache server started on port 80"
-    echo "📁 Content directory: /opt/apache-content"
-    
-elif [[ "${dockerImage}" == *"postgres"* ]]; then
-    echo "🗄️ Detected PostgreSQL database"
-    echo "$(date): Deploying PostgreSQL database"
-    
-    # Create postgres data directory
-    mkdir -p /opt/postgres-data
-    chown ubuntu:ubuntu /opt/postgres-data
-    
-    # Stop any existing container
-    docker stop postgres-db 2>/dev/null || true
-    docker rm postgres-db 2>/dev/null || true
-    
-    # Run PostgreSQL
-    docker run -d \\
-        --name postgres-db \\
-        --restart unless-stopped \\
-        -p 5432:5432 \\
-        -v /opt/postgres-data:/var/lib/postgresql/data \\
-        -e POSTGRES_PASSWORD=changeme123 \\
-        -e POSTGRES_DB=myapp \\
-        ${dockerImage}
-    
-    echo "🗄️ PostgreSQL started on port 5432"
-    echo "🔑 Default password: changeme123"
-    echo "📁 Data stored in: /opt/postgres-data"
-    
-elif [[ "${dockerImage}" == *"mysql"* ]]; then
-    echo "🗄️ Detected MySQL database"
-    echo "$(date): Deploying MySQL database"
-    
-    # Create mysql data directory
-    mkdir -p /opt/mysql-data
-    chown ubuntu:ubuntu /opt/mysql-data
-    
-    # Stop any existing container
-    docker stop mysql-db 2>/dev/null || true
-    docker rm mysql-db 2>/dev/null || true
-    
-    # Run MySQL
-    docker run -d \\
-        --name mysql-db \\
-        --restart unless-stopped \\
-        -p 3306:3306 \\
-        -v /opt/mysql-data:/var/lib/mysql \\
-        -e MYSQL_ROOT_PASSWORD=changeme123 \\
-        -e MYSQL_DATABASE=myapp \\
-        ${dockerImage}
-    
-    echo "🗄️ MySQL started on port 3306"
-    echo "🔑 Root password: changeme123"
-    echo "📁 Data stored in: /opt/mysql-data"
-    
-elif [[ "${dockerImage}" == *"redis"* ]]; then
-    echo "⚡ Detected Redis cache"
-    echo "$(date): Deploying Redis cache"
-    
-    # Create redis data directory
-    mkdir -p /opt/redis-data
-    chown ubuntu:ubuntu /opt/redis-data
-    
-    # Stop any existing container
-    docker stop redis-cache 2>/dev/null || true
-    docker rm redis-cache 2>/dev/null || true
-    
-    # Run Redis
-    docker run -d \\
-        --name redis-cache \\
-        --restart unless-stopped \\
-        -p 6379:6379 \\
-        -v /opt/redis-data:/data \\
-        ${dockerImage} redis-server --appendonly yes
-    
-    echo "⚡ Redis started on port 6379"
-    echo "📁 Data stored in: /opt/redis-data"
-    
-else
-    echo "📦 Running generic container"
-    echo "$(date): Deploying generic container"
-    
-    # Stop any existing container
-    docker stop custom-service 2>/dev/null || true
-    docker rm custom-service 2>/dev/null || true
-    
-    # For generic images, try to run with common configurations
-    if [[ "${dockerImage}" == *"node"* ]] || [[ "${dockerImage}" == *"express"* ]] || [[ "${dockerImage}" == *"app"* ]]; then
-        # Likely a web application
-        docker run -d \\
-            --name custom-service \\
-            --restart unless-stopped \\
-            -p 3000:3000 \\
-            -p 8080:8080 \\
-            ${dockerImage}
-        echo "🌐 Application started on ports 3000 and 8080"
-    else
-        # Generic container
-        docker run -d \\
-            --name custom-service \\
-            --restart unless-stopped \\
-            ${dockerImage}
-        echo "📦 Container started with image: ${dockerImage}"
-    fi
-fi
 
-# Wait for container to start properly
-echo "⏳ Waiting for container to start..."
-sleep 15
+# Ejecutar docker compose up -d
+cd ${dockerComposePath}
+docker compose up -d
+chown -R ubuntu:ubuntu ${dockerComposePath}
 
-# Verify container is running
-echo "🔍 Verifying container status..."
-RUNNING_CONTAINERS=\$(docker ps --format "table {{.Names}}\\t{{.Status}}" | grep -v NAMES)
-if [ ! -z "\$RUNNING_CONTAINERS" ]; then
-    echo "✅ Container(s) running successfully:"
-    echo "\$RUNNING_CONTAINERS"
-    echo "$(date): Container deployment completed successfully"
-    
-    # Show container details
-    echo "📊 Container details:"
-    docker ps --format "table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}"
-    
-    # Show logs for verification
-    echo "📋 Recent container logs:"
-    CONTAINER_NAME=\$(docker ps --format "{{.Names}}" | head -1)
-    if [ ! -z "\$CONTAINER_NAME" ]; then
-        docker logs --tail 10 \$CONTAINER_NAME
-    fi
-else
-    echo "⚠️ No containers appear to be running"
-    echo "$(date): Container deployment may have failed"
-    echo "📋 All containers status:"
-    docker ps -a
-    echo "📋 Recent logs:"
-    docker logs \$(docker ps -aq | head -1) --tail 20 2>/dev/null || echo "No logs available"
-fi
+# Mostrar estado de los contenedores
+sleep 5
+docker compose ps
 
-# Show final status
-echo "📊 Final Docker status:"
-docker --version
-docker-compose --version
-echo "🐳 Running containers:"
-docker ps
-
-echo "✅ Docker image deployment completed!"
-echo "📋 Check /var/log/docker-install.log for detailed logs"
-echo "🔧 Use 'docker ps' to see running containers"
-echo "📊 Use 'docker logs <container-name>' to see container logs"
-
-# Mark installation as complete
-echo "DOCKER_INSTALLATION_COMPLETE" > /tmp/docker-install-complete
-echo "$(date): Docker installation and deployment marked as complete"`;
+echo "✅ docker-compose.yml desplegado y contenedores iniciados."
+`;
+      return script;
     }
 
     return script;

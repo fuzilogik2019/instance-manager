@@ -1,178 +1,122 @@
-# AWS EC2 Management Application
+# Instance Manager AWS EC2
 
-A modern web application for managing AWS EC2 instances with a beautiful React frontend and Node.js backend.
+Una aplicación web moderna para gestionar instancias EC2 de AWS con un frontend en React y backend en Node.js.
 
-## 🚀 Quick Start
+## 🚀 Inicio Rápido
 
-### Prerequisites
-- Node.js 18+ installed
-- AWS Account with programmatic access
-- AWS CLI configured (optional but recommended)
+### Requisitos Previos
 
-### 1. Install Dependencies
+- Node.js 18+ instalado
+- Cuenta de AWS con acceso programático
+
+### 1. Instalación de Dependencias
+
 ```bash
 npm install
 ```
 
-### 2. Configure AWS Credentials
+### 2. Configuración de Credenciales AWS
 
-#### Option A: Environment Variables (Recommended)
-1. Copy the example environment file:
-```bash
-cp .env.example .env
-```
+> **¡Nuevo flujo!**
+> Ya no es necesario editar archivos `.env`. Al ingresar a la plataforma, se te pedirá tu **AWS Access Key**, **Secret Key** y la región. Estos datos se almacenan de forma segura en tu navegador (localStorage) y se envían al backend solo para la sesión activa.
 
-2. Edit `.env` and add your AWS credentials:
-```env
-AWS_ACCESS_KEY_ID=your_access_key_here
-AWS_SECRET_ACCESS_KEY=your_secret_key_here
-AWS_REGION=us-east-1
-```
+1. Inicia la aplicación:
 
-#### Option B: AWS CLI Profile
-If you have AWS CLI configured, the application will automatically use your default profile.
-
-### 3. Create AWS IAM User (If you don't have one)
-
-1. Go to [AWS IAM Console](https://console.aws.amazon.com/iam/)
-2. Click "Users" → "Add User"
-3. Choose "Programmatic access"
-4. Attach the following policies:
-   - `AmazonEC2FullAccess`
-   - `AmazonVPCFullAccess` (optional, for advanced networking)
-5. Save the Access Key ID and Secret Access Key
-
-### 4. Start the Application
 ```bash
 npm run dev
 ```
 
-The application will start on:
-- Frontend: http://localhost:5173
-- Backend: http://localhost:3001
+2. Accede a [http://localhost:5173](http://localhost:5173) y completa el formulario de credenciales AWS.
+3. ¡Listo! Ya puedes gestionar tus recursos EC2.
 
-## 🔧 AWS Permissions Required
+## 🛠️ Funcionalidades Principales
 
-Your IAM user needs the following permissions:
+- Lanzar instancias EC2 con configuración personalizada
+- Iniciar, detener y terminar instancias
+- Ver detalles y estado de instancias
+- Soporte para instancias Spot
+- Configuración de volúmenes EBS
+- Selección y gestión de Security Groups
+- Gestión de pares de claves SSH (crear, subir, eliminar)
+- Multi-región
+- Instalación automática de Docker y Docker Compose
+- Opción de ejecutar imágenes Docker individuales o stacks completos con docker-compose
+- Adjuntar y gestionar volúmenes adicionales
 
-### Minimum Required Permissions:
+## 🔒 Seguridad y Manejo de Credenciales
+
+- Las credenciales AWS **no se guardan en archivos** ni en el servidor.
+- Se solicitan al usuario al iniciar sesión y se almacenan en localStorage.
+- El backend solo mantiene las credenciales en variables de entorno durante la sesión activa.
+- Puedes cambiar las credenciales desde la UI en cualquier momento.
+
+## 🌍 Regiones Soportadas
+
+La aplicación soporta todas las regiones públicas de AWS. Ejemplos populares:
+
+- `us-east-1` - US East (N. Virginia)
+- `us-west-2` - US West (Oregon)
+- `eu-west-1` - Europa (Irlanda)
+- `ap-southeast-1` - Asia Pacífico (Singapur)
+
+## 📝 Permisos AWS Recomendados
+
+Tu usuario IAM debe tener permisos mínimos para EC2:
+
 ```json
 {
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Action": [
-                "ec2:RunInstances",
-                "ec2:TerminateInstances",
-                "ec2:StartInstances",
-                "ec2:StopInstances",
-                "ec2:DescribeInstances",
-                "ec2:DescribeInstanceTypes",
-                "ec2:DescribeRegions",
-                "ec2:DescribeAvailabilityZones",
-                "ec2:DescribeSecurityGroups",
-                "ec2:DescribeKeyPairs",
-                "ec2:DescribeVolumes",
-                "ec2:CreateTags",
-                "ec2:DescribeTags"
-            ],
-            "Resource": "*"
-        }
-    ]
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances",
+        "ec2:TerminateInstances",
+        "ec2:StartInstances",
+        "ec2:StopInstances",
+        "ec2:DescribeInstances",
+        "ec2:DescribeInstanceTypes",
+        "ec2:DescribeRegions",
+        "ec2:DescribeAvailabilityZones",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeKeyPairs",
+        "ec2:DescribeVolumes",
+        "ec2:CreateTags",
+        "ec2:DescribeTags"
+      ],
+      "Resource": "*"
+    }
+  ]
 }
 ```
 
-### For Full Functionality (Recommended):
-- `AmazonEC2FullAccess` - Complete EC2 management
-- `AmazonVPCReadOnlyAccess` - View VPC information
+Para funcionalidad completa, se recomienda `AmazonEC2FullAccess`.
 
-## 🛡️ Security Best Practices
+## 💡 Consejos de Uso
 
-1. **Use IAM Roles in Production**: For production deployments, use IAM roles instead of access keys
-2. **Least Privilege**: Only grant the minimum permissions needed
-3. **Rotate Keys**: Regularly rotate your access keys
-4. **Environment Variables**: Never commit credentials to version control
-5. **VPC Configuration**: Use private subnets for production instances
+- **Docker y docker-compose:** Puedes instalar Docker automáticamente y elegir entre ejecutar una imagen individual o subir tu propio archivo `docker-compose.yml` para stacks complejos.
+- **Gestión de claves SSH:** Puedes crear, subir o eliminar pares de claves desde la UI. Las claves privadas solo se almacenan localmente.
+- **Volúmenes EBS:** Crea y adjunta volúmenes adicionales a tus instancias fácilmente.
 
-## 🌍 Supported AWS Regions
+## 🐞 Solución de Problemas
 
-The application supports all AWS regions. Popular regions include:
-- `us-east-1` - US East (N. Virginia)
-- `us-west-2` - US West (Oregon)
-- `eu-west-1` - Europe (Ireland)
-- `ap-southeast-1` - Asia Pacific (Singapore)
+- **"AWS credentials not configured"**: Asegúrate de haber ingresado correctamente tus credenciales en la UI.
+- **Errores de permisos**: Verifica que tu usuario IAM tenga los permisos necesarios.
+- **Problemas de lanzamiento de instancias**: Revisa los límites de tu cuenta y la disponibilidad de tipos de instancia en la región seleccionada.
 
-## 📊 Features
+## 💰 Consideraciones de Costos
 
-### ✅ Currently Available:
-- Launch EC2 instances with custom configuration
-- Start/Stop/Terminate instances
-- View instance details and status
-- Support for Spot instances
-- EBS volume configuration
-- Security group selection
-- SSH key pair management
-- Multi-region support
+- Las instancias EC2 y los volúmenes EBS generan cargos en tu cuenta AWS.
+- El uso de instancias Spot puede reducir costos significativamente.
+- Recuerda eliminar recursos que no utilices para evitar cargos innecesarios.
 
-### 🚧 Coming Soon:
-- Security group management
-- Key pair creation/upload
-- Volume management
-- Cost estimation
-- Instance monitoring
-- Auto-scaling groups
+## 👨‍💻 Contribuir
 
-## 🐛 Troubleshooting
+1. Haz un fork del repositorio
+2. Crea una rama para tu feature o fix
+3. Realiza tus cambios y pruébalos
+4. Envía un Pull Request
 
-### "AWS credentials not found" Error
-1. Verify your `.env` file exists and has correct credentials
-2. Check that credentials have proper permissions
-3. Test credentials with AWS CLI: `aws sts get-caller-identity`
+## 📄 Licencia
 
-### "Instance launch failed" Error
-1. Check if you have sufficient EC2 limits in your AWS account
-2. Verify the selected region supports the instance type
-3. Ensure security groups and key pairs exist in the selected region
-
-### "Permission denied" Errors
-1. Review IAM permissions for your user/role
-2. Check if you have EC2 service limits
-3. Verify you're not trying to launch in a restricted region
-
-## 💰 Cost Considerations
-
-- **Instance Costs**: You'll be charged for running EC2 instances
-- **Storage Costs**: EBS volumes incur storage charges
-- **Data Transfer**: Outbound data transfer may incur charges
-- **Spot Instances**: Use spot instances for up to 90% savings
-
-## 🔄 Development Mode
-
-The application automatically detects if AWS credentials are configured:
-- **With Credentials**: Real AWS operations
-- **Without Credentials**: Mock mode for development
-
-## 📝 Environment Variables
-
-| Variable | Description | Required | Default |
-|----------|-------------|----------|---------|
-| `AWS_ACCESS_KEY_ID` | AWS Access Key | Yes* | - |
-| `AWS_SECRET_ACCESS_KEY` | AWS Secret Key | Yes* | - |
-| `AWS_REGION` | Default AWS Region | No | `us-east-1` |
-| `PORT` | Server Port | No | `3001` |
-| `NODE_ENV` | Environment | No | `development` |
-
-*Required for real AWS operations. Optional for mock mode.
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
-
-## 📄 License
-
-This project is licensed under the MIT License.
+Este proyecto está licenciado bajo MIT.

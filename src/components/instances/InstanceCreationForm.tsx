@@ -1,14 +1,42 @@
-import React, { useState, useEffect } from 'react';
-import { useForm } from 'react-hook-form';
-import { Plus, HardDrive, AlertCircle, CheckCircle, Link, Monitor, Server, Smartphone, Star, Package, Container, AlertTriangle } from 'lucide-react';
-import { AWSRegion, InstanceType, SecurityGroup, SSHKeyPair, EBSVolume, AMI } from '../../types/aws';
-import { getRegions, getInstanceTypes, getSecurityGroups, getKeyPairs, getVolumes, getAMIs, createInstance } from '../../services/api';
-import LoadingSpinner from '../ui/LoadingSpinner';
-import Button from '../ui/Button';
-import Select from '../ui/Select';
-import Input from '../ui/Input';
-import Card from '../ui/Card';
-import Badge from '../ui/Badge';
+import React, { useState, useEffect } from "react";
+import { useForm } from "react-hook-form";
+import {
+  Plus,
+  HardDrive,
+  AlertCircle,
+  CheckCircle,
+  Link,
+  Monitor,
+  Server,
+  Smartphone,
+  Star,
+  Package,
+  Container,
+  AlertTriangle,
+} from "lucide-react";
+import {
+  AWSRegion,
+  InstanceType,
+  SecurityGroup,
+  SSHKeyPair,
+  EBSVolume,
+  AMI,
+} from "../../types/aws";
+import {
+  getRegions,
+  getInstanceTypes,
+  getSecurityGroups,
+  getKeyPairs,
+  getVolumes,
+  getAMIs,
+  createInstance,
+} from "../../services/api";
+import LoadingSpinner from "../ui/LoadingSpinner";
+import Button from "../ui/Button";
+import Select from "../ui/Select";
+import Input from "../ui/Input";
+import Card from "../ui/Card";
+import Badge from "../ui/Badge";
 
 interface FormData {
   name: string;
@@ -20,10 +48,13 @@ interface FormData {
   isSpotInstance: boolean;
   userData: string;
   rootVolumeSize: number;
-  rootVolumeType: 'gp2' | 'gp3' | 'io1' | 'io2';
+  rootVolumeType: "gp2" | "gp3" | "io1" | "io2";
   rootVolumeEncrypted: boolean;
   installDocker: boolean;
   dockerImageToPull: string;
+  useDockerCompose?: boolean;
+  dockerComposePath?: string;
+  dockerComposeContent?: string;
 }
 
 interface InstanceCreationFormProps {
@@ -31,7 +62,10 @@ interface InstanceCreationFormProps {
   onClose: () => void;
 }
 
-export default function InstanceCreationForm({ onInstanceCreated, onClose }: InstanceCreationFormProps) {
+export default function InstanceCreationForm({
+  onInstanceCreated,
+  onClose,
+}: InstanceCreationFormProps) {
   const [regions, setRegions] = useState<AWSRegion[]>([]);
   const [amis, setAMIs] = useState<AMI[]>([]);
   const [instanceTypes, setInstanceTypes] = useState<InstanceType[]>([]);
@@ -39,25 +73,34 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
   const [keyPairs, setKeyPairs] = useState<SSHKeyPair[]>([]);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [amiFilter, setAmiFilter] = useState<string>('all');
+  const [amiFilter, setAmiFilter] = useState<string>("all");
   const [showNonUbuntuWarning, setShowNonUbuntuWarning] = useState(false);
 
-  const { register, handleSubmit, watch, setValue, formState: { errors } } = useForm<FormData>({
+  const {
+    register,
+    handleSubmit,
+    watch,
+    setValue,
+    formState: { errors },
+  } = useForm<FormData>({
     defaultValues: {
       rootVolumeSize: 8,
-      rootVolumeType: 'gp3',
+      rootVolumeType: "gp3",
       rootVolumeEncrypted: true,
       installDocker: false,
-      dockerImageToPull: '',
-    }
+      dockerImageToPull: "",
+    },
   });
-  
-  const selectedRegion = watch('region');
-  const selectedAMI = watch('amiId');
-  const selectedInstanceType = watch('instanceType');
-  const rootVolumeSize = watch('rootVolumeSize');
-  const rootVolumeType = watch('rootVolumeType');
-  const installDocker = watch('installDocker');
+
+  const selectedRegion = watch("region");
+  const selectedAMI = watch("amiId");
+  const selectedInstanceType = watch("instanceType");
+  const rootVolumeSize = watch("rootVolumeSize");
+  const rootVolumeType = watch("rootVolumeType");
+  const installDocker = watch("installDocker");
+  const useDockerCompose = watch("useDockerCompose");
+  const dockerComposePath = watch("dockerComposePath");
+  const dockerComposeContent = watch("dockerComposeContent");
 
   useEffect(() => {
     loadRegions();
@@ -76,23 +119,25 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
   useEffect(() => {
     if (amis.length > 0 && !selectedAMI) {
       // Find Ubuntu 22.04 LTS AMI (should be first due to our sorting)
-      const ubuntu2204 = amis.find(ami => 
-        ami.osType === 'ubuntu' && ami.osVersion === '22.04'
+      const ubuntu2204 = amis.find(
+        (ami) => ami.osType === "ubuntu" && ami.osVersion === "22.04"
       );
-      
+
       if (ubuntu2204) {
-        setValue('amiId', ubuntu2204.id);
+        setValue("amiId", ubuntu2204.id);
         console.log(`🎯 Auto-selected Ubuntu 22.04 LTS: ${ubuntu2204.name}`);
         setShowNonUbuntuWarning(false);
       } else {
         // If no Ubuntu 22.04, try Ubuntu 20.04
-        const ubuntu2004 = amis.find(ami => 
-          ami.osType === 'ubuntu' && ami.osVersion === '20.04'
+        const ubuntu2004 = amis.find(
+          (ami) => ami.osType === "ubuntu" && ami.osVersion === "20.04"
         );
-        
+
         if (ubuntu2004) {
-          setValue('amiId', ubuntu2004.id);
-          console.log(`🔄 Auto-selected Ubuntu 20.04 LTS as fallback: ${ubuntu2004.name}`);
+          setValue("amiId", ubuntu2004.id);
+          console.log(
+            `🔄 Auto-selected Ubuntu 20.04 LTS as fallback: ${ubuntu2004.name}`
+          );
           setShowNonUbuntuWarning(false);
         }
       }
@@ -102,9 +147,11 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
   // Check for non-Ubuntu AMI selection and show warning
   useEffect(() => {
     if (selectedAMI && amis.length > 0) {
-      const selectedAMIDetails = amis.find(ami => ami.id === selectedAMI);
+      const selectedAMIDetails = amis.find((ami) => ami.id === selectedAMI);
       if (selectedAMIDetails && installDocker) {
-        const isUbuntu22 = selectedAMIDetails.osType === 'ubuntu' && selectedAMIDetails.osVersion === '22.04';
+        const isUbuntu22 =
+          selectedAMIDetails.osType === "ubuntu" &&
+          selectedAMIDetails.osVersion === "22.04";
         setShowNonUbuntuWarning(!isUbuntu22);
       } else {
         setShowNonUbuntuWarning(false);
@@ -117,7 +164,7 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
       const data = await getRegions();
       setRegions(data);
     } catch (error) {
-      console.error('Failed to load regions:', error);
+      console.error("Failed to load regions:", error);
     }
   };
 
@@ -127,14 +174,18 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
       const data = await getAMIs(region);
       setAMIs(data);
       console.log(`Loaded ${data.length} AMIs for region ${region}`);
-      
+
       // Log Ubuntu 22.04 availability
-      const ubuntu2204Count = data.filter(ami => ami.osType === 'ubuntu' && ami.osVersion === '22.04').length;
-      const ubuntu2004Count = data.filter(ami => ami.osType === 'ubuntu' && ami.osVersion === '20.04').length;
+      const ubuntu2204Count = data.filter(
+        (ami) => ami.osType === "ubuntu" && ami.osVersion === "22.04"
+      ).length;
+      const ubuntu2004Count = data.filter(
+        (ami) => ami.osType === "ubuntu" && ami.osVersion === "20.04"
+      ).length;
       console.log(`Found ${ubuntu2204Count} Ubuntu 22.04 LTS AMIs`);
       console.log(`Found ${ubuntu2004Count} Ubuntu 20.04 LTS AMIs`);
     } catch (error) {
-      console.error('Failed to load AMIs:', error);
+      console.error("Failed to load AMIs:", error);
     } finally {
       setLoading(false);
     }
@@ -146,7 +197,7 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
       const data = await getInstanceTypes(region);
       setInstanceTypes(data);
     } catch (error) {
-      console.error('Failed to load instance types:', error);
+      console.error("Failed to load instance types:", error);
     } finally {
       setLoading(false);
     }
@@ -157,7 +208,7 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
       const data = await getSecurityGroups(region);
       setSecurityGroups(data);
     } catch (error) {
-      console.error('Failed to load security groups:', error);
+      console.error("Failed to load security groups:", error);
     }
   };
 
@@ -166,15 +217,15 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
       const data = await getKeyPairs();
       setKeyPairs(data);
     } catch (error) {
-      console.error('Failed to load key pairs:', error);
+      console.error("Failed to load key pairs:", error);
     }
   };
 
   const getOSIcon = (osType: string) => {
     switch (osType) {
-      case 'windows':
+      case "windows":
         return <Monitor className="w-5 h-5 text-blue-600" />;
-      case 'macos':
+      case "macos":
         return <Smartphone className="w-5 h-5 text-gray-600" />;
       default:
         return <Server className="w-5 h-5 text-green-600" />;
@@ -183,35 +234,45 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
 
   const getOSColor = (osType: string) => {
     switch (osType) {
-      case 'amazon-linux': return 'bg-orange-100 text-orange-800';
-      case 'ubuntu': return 'bg-orange-100 text-orange-800';
-      case 'windows': return 'bg-blue-100 text-blue-800';
-      case 'redhat': return 'bg-red-100 text-red-800';
-      case 'suse': return 'bg-green-100 text-green-800';
-      case 'debian': return 'bg-purple-100 text-purple-800';
-      case 'macos': return 'bg-gray-100 text-gray-800';
-      default: return 'bg-gray-100 text-gray-800';
+      case "amazon-linux":
+        return "bg-orange-100 text-orange-800";
+      case "ubuntu":
+        return "bg-orange-100 text-orange-800";
+      case "windows":
+        return "bg-blue-100 text-blue-800";
+      case "redhat":
+        return "bg-red-100 text-red-800";
+      case "suse":
+        return "bg-green-100 text-green-800";
+      case "debian":
+        return "bg-purple-100 text-purple-800";
+      case "macos":
+        return "bg-gray-100 text-gray-800";
+      default:
+        return "bg-gray-100 text-gray-800";
     }
   };
 
   const getFilteredAMIs = () => {
-    if (amiFilter === 'all') return amis;
-    return amis.filter(ami => ami.osType === amiFilter);
+    if (amiFilter === "all") return amis;
+    return amis.filter((ami) => ami.osType === amiFilter);
   };
 
   const isRecommendedAMI = (ami: AMI) => {
-    return ami.osType === 'ubuntu' && ami.osVersion === '22.04';
+    return ami.osType === "ubuntu" && ami.osVersion === "22.04";
   };
 
-  const selectedAMIDetails = amis.find(ami => ami.id === selectedAMI);
-  const selectedInstanceTypeDetails = instanceTypes.find(type => type.name === selectedInstanceType);
+  const selectedAMIDetails = amis.find((ami) => ami.id === selectedAMI);
+  const selectedInstanceTypeDetails = instanceTypes.find(
+    (type) => type.name === selectedInstanceType
+  );
 
   const onSubmit = async (data: FormData) => {
     try {
       setCreating(true);
-      
+
       // Create ONLY the root volume configuration - NO additional volumes
-      const rootVolume: Omit<EBSVolume, 'id'> = {
+      const rootVolume: Omit<EBSVolume, "id"> = {
         type: data.rootVolumeType,
         size: data.rootVolumeSize,
         encrypted: data.rootVolumeEncrypted,
@@ -229,12 +290,16 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
         tags: { Name: data.name },
         installDocker: data.installDocker,
         dockerImageToPull: data.dockerImageToPull || undefined,
+        rootDeviceName: selectedAMIDetails?.rootDeviceName || "/dev/xvda",
+        useDockerCompose: data.useDockerCompose,
+        dockerComposePath: data.dockerComposePath,
+        dockerComposeContent: data.dockerComposeContent,
       });
       onInstanceCreated();
       onClose();
     } catch (error) {
-      console.error('Failed to create instance:', error);
-      alert('Error creating instance: ' + (error.message || 'Unknown error'));
+      console.error("Failed to create instance:", error);
+      alert("Error creating instance: " + (error.message || "Unknown error"));
     } finally {
       setCreating(false);
     }
@@ -244,24 +309,31 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
       <div className="bg-white rounded-lg shadow-xl max-w-6xl w-full max-h-[90vh] overflow-y-auto">
         <div className="px-6 py-4 border-b border-gray-200">
-          <h2 className="text-xl font-semibold text-gray-900">Launch New EC2 Instance</h2>
-          <p className="text-sm text-gray-600 mt-1">Configure your new EC2 instance with the options below</p>
+          <h2 className="text-xl font-semibold text-gray-900">
+            Launch New EC2 Instance
+          </h2>
+          <p className="text-sm text-gray-600 mt-1">
+            Configure your new EC2 instance with the options below
+          </p>
         </div>
 
         <form onSubmit={handleSubmit(onSubmit)} className="p-6 space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <Input
               label="Instance Name"
-              {...register('name', { required: 'Instance name is required' })}
+              {...register("name", { required: "Instance name is required" })}
               error={errors.name?.message}
               placeholder="my-web-server"
             />
 
             <Select
               label="AWS Region"
-              {...register('region', { required: 'Region is required' })}
+              {...register("region", { required: "Region is required" })}
               error={errors.region?.message}
-              options={regions.map(region => ({ value: region.code, label: `${region.name} (${region.code})` }))}
+              options={regions.map((region) => ({
+                value: region.code,
+                label: `${region.name} (${region.code})`,
+              }))}
               placeholder="Select a region"
             />
           </div>
@@ -274,17 +346,39 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
                   <div className="flex items-start space-x-3">
                     <Star className="w-6 h-6 text-yellow-500 mt-0.5" />
                     <div>
-                      <h4 className="font-semibold text-blue-900 mb-2">🎯 Recommended: Ubuntu 22.04 LTS</h4>
+                      <h4 className="font-semibold text-blue-900 mb-2">
+                        🎯 Recommended: Ubuntu 22.04 LTS
+                      </h4>
                       <p className="text-sm text-blue-800 mb-2">
-                        Ubuntu 22.04 LTS is our recommended choice for most applications. It offers:
+                        Ubuntu 22.04 LTS is our recommended choice for most
+                        applications. It offers:
                       </p>
                       <ul className="text-sm text-blue-700 space-y-1">
-                        <li>• <strong>Long Term Support</strong> until April 2027</li>
-                        <li>• <strong>Latest features</strong> and improved performance</li>
-                        <li>• <strong>Strong community support</strong> and extensive documentation</li>
-                        <li>• <strong>Perfect for containers</strong>, web servers, and modern workloads</li>
-                        <li>• <strong>SSH Terminal ready</strong> with username: <code className="bg-blue-100 px-1 rounded">ubuntu</code></li>
-                        <li>• <strong>Docker compatible</strong> with excellent container support</li>
+                        <li>
+                          • <strong>Long Term Support</strong> until April 2027
+                        </li>
+                        <li>
+                          • <strong>Latest features</strong> and improved
+                          performance
+                        </li>
+                        <li>
+                          • <strong>Strong community support</strong> and
+                          extensive documentation
+                        </li>
+                        <li>
+                          • <strong>Perfect for containers</strong>, web
+                          servers, and modern workloads
+                        </li>
+                        <li>
+                          • <strong>SSH Terminal ready</strong> with username:{" "}
+                          <code className="bg-blue-100 px-1 rounded">
+                            ubuntu
+                          </code>
+                        </li>
+                        <li>
+                          • <strong>Docker compatible</strong> with excellent
+                          container support
+                        </li>
                       </ul>
                     </div>
                   </div>
@@ -292,33 +386,69 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
 
                 {/* AMI Filter */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Filter by Operating System</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Filter by Operating System
+                  </label>
                   <div className="flex flex-wrap gap-2">
                     {[
-                      { value: 'all', label: 'All Operating Systems', count: amis.length },
-                      { value: 'ubuntu', label: 'Ubuntu (Recommended)', count: amis.filter(a => a.osType === 'ubuntu').length },
-                      { value: 'amazon-linux', label: 'Amazon Linux', count: amis.filter(a => a.osType === 'amazon-linux').length },
-                      { value: 'windows', label: 'Windows', count: amis.filter(a => a.osType === 'windows').length },
-                      { value: 'redhat', label: 'Red Hat', count: amis.filter(a => a.osType === 'redhat').length },
-                      { value: 'suse', label: 'SUSE', count: amis.filter(a => a.osType === 'suse').length },
-                      { value: 'debian', label: 'Debian', count: amis.filter(a => a.osType === 'debian').length },
-                    ].filter(filter => filter.count > 0).map((filter) => (
-                      <button
-                        key={filter.value}
-                        type="button"
-                        onClick={() => setAmiFilter(filter.value)}
-                        className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                          amiFilter === filter.value
-                            ? 'bg-blue-600 text-white'
-                            : filter.value === 'ubuntu'
-                            ? 'bg-green-100 text-green-700 hover:bg-green-200 border border-green-300'
-                            : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                        }`}
-                      >
-                        {filter.label} ({filter.count})
-                        {filter.value === 'ubuntu' && <Star className="w-3 h-3 inline ml-1 text-yellow-500" />}
-                      </button>
-                    ))}
+                      {
+                        value: "all",
+                        label: "All Operating Systems",
+                        count: amis.length,
+                      },
+                      {
+                        value: "ubuntu",
+                        label: "Ubuntu (Recommended)",
+                        count: amis.filter((a) => a.osType === "ubuntu").length,
+                      },
+                      {
+                        value: "amazon-linux",
+                        label: "Amazon Linux",
+                        count: amis.filter((a) => a.osType === "amazon-linux")
+                          .length,
+                      },
+                      {
+                        value: "windows",
+                        label: "Windows",
+                        count: amis.filter((a) => a.osType === "windows")
+                          .length,
+                      },
+                      {
+                        value: "redhat",
+                        label: "Red Hat",
+                        count: amis.filter((a) => a.osType === "redhat").length,
+                      },
+                      {
+                        value: "suse",
+                        label: "SUSE",
+                        count: amis.filter((a) => a.osType === "suse").length,
+                      },
+                      {
+                        value: "debian",
+                        label: "Debian",
+                        count: amis.filter((a) => a.osType === "debian").length,
+                      },
+                    ]
+                      .filter((filter) => filter.count > 0)
+                      .map((filter) => (
+                        <button
+                          key={filter.value}
+                          type="button"
+                          onClick={() => setAmiFilter(filter.value)}
+                          className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                            amiFilter === filter.value
+                              ? "bg-blue-600 text-white"
+                              : filter.value === "ubuntu"
+                              ? "bg-green-100 text-green-700 hover:bg-green-200 border border-green-300"
+                              : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                          }`}
+                        >
+                          {filter.label} ({filter.count})
+                          {filter.value === "ubuntu" && (
+                            <Star className="w-3 h-3 inline ml-1 text-yellow-500" />
+                          )}
+                        </button>
+                      ))}
                   </div>
                 </div>
 
@@ -330,7 +460,9 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
                   {loading ? (
                     <div className="flex items-center justify-center py-8">
                       <LoadingSpinner size="md" />
-                      <span className="ml-2 text-gray-600">Loading AMIs...</span>
+                      <span className="ml-2 text-gray-600">
+                        Loading AMIs...
+                      </span>
                     </div>
                   ) : (
                     <div className="grid grid-cols-1 gap-3 max-h-64 overflow-y-auto border border-gray-200 rounded-lg p-4">
@@ -339,30 +471,42 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
                           key={ami.id}
                           className={`flex items-start space-x-3 p-3 rounded-lg border-2 cursor-pointer transition-all ${
                             selectedAMI === ami.id
-                              ? 'border-blue-500 bg-blue-50'
+                              ? "border-blue-500 bg-blue-50"
                               : isRecommendedAMI(ami)
-                              ? 'border-green-300 bg-green-50 hover:border-green-400'
-                              : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                              ? "border-green-300 bg-green-50 hover:border-green-400"
+                              : "border-gray-200 hover:border-gray-300 hover:bg-gray-50"
                           }`}
                         >
                           <input
                             type="radio"
                             value={ami.id}
-                            {...register('amiId', { required: 'Please select an AMI' })}
+                            {...register("amiId", {
+                              required: "Please select an AMI",
+                            })}
                             className="mt-1"
                           />
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center space-x-2 mb-1">
                               {getOSIcon(ami.osType)}
-                              <span className="font-medium text-gray-900">{ami.name}</span>
+                              <span className="font-medium text-gray-900">
+                                {ami.name}
+                              </span>
                               {isRecommendedAMI(ami) && (
-                                <Badge variant="success" size="sm" className="bg-green-100 text-green-800">
+                                <Badge
+                                  variant="success"
+                                  size="sm"
+                                  className="bg-green-100 text-green-800"
+                                >
                                   <Star className="w-3 h-3 mr-1" />
                                   RECOMMENDED
                                 </Badge>
                               )}
-                              <Badge variant="secondary" size="sm" className={getOSColor(ami.osType)}>
-                                {ami.osType.replace('-', ' ').toUpperCase()}
+                              <Badge
+                                variant="secondary"
+                                size="sm"
+                                className={getOSColor(ami.osType)}
+                              >
+                                {ami.osType.replace("-", " ").toUpperCase()}
                               </Badge>
                               <Badge variant="secondary" size="sm">
                                 {ami.osVersion}
@@ -371,15 +515,23 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
                                 {ami.architecture}
                               </Badge>
                             </div>
-                            <p className="text-sm text-gray-600 mb-2">{ami.description}</p>
+                            <p className="text-sm text-gray-600 mb-2">
+                              {ami.description}
+                            </p>
                             <div className="flex items-center space-x-4 text-xs text-gray-500">
                               <span>Default User: {ami.defaultUsername}</span>
                               <span>Platform: {ami.platform}</span>
-                              <span>Created: {new Date(ami.creationDate).toLocaleDateString()}</span>
+                              <span>
+                                Created:{" "}
+                                {new Date(
+                                  ami.creationDate
+                                ).toLocaleDateString()}
+                              </span>
                             </div>
                             {isRecommendedAMI(ami) && (
                               <div className="mt-2 text-xs text-green-700 bg-green-100 px-2 py-1 rounded">
-                                ✨ Perfect for containers, web development, and modern server workloads
+                                ✨ Perfect for containers, web development, and
+                                modern server workloads
                               </div>
                             )}
                           </div>
@@ -388,50 +540,76 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
                     </div>
                   )}
                   {errors.amiId && (
-                    <p className="text-sm text-red-600 mt-1">{errors.amiId.message}</p>
+                    <p className="text-sm text-red-600 mt-1">
+                      {errors.amiId.message}
+                    </p>
                   )}
                 </div>
 
                 {/* Selected AMI Details */}
                 {selectedAMIDetails && (
-                  <div className={`border rounded-lg p-4 ${
-                    isRecommendedAMI(selectedAMIDetails) 
-                      ? 'bg-green-50 border-green-200' 
-                      : 'bg-gray-50 border-gray-200'
-                  }`}>
+                  <div
+                    className={`border rounded-lg p-4 ${
+                      isRecommendedAMI(selectedAMIDetails)
+                        ? "bg-green-50 border-green-200"
+                        : "bg-gray-50 border-gray-200"
+                    }`}
+                  >
                     <div className="flex items-start space-x-3">
                       {getOSIcon(selectedAMIDetails.osType)}
                       <div>
                         <div className="flex items-center space-x-2 mb-1">
-                          <h4 className={`font-medium ${
-                            isRecommendedAMI(selectedAMIDetails) ? 'text-green-900' : 'text-gray-900'
-                          }`}>
+                          <h4
+                            className={`font-medium ${
+                              isRecommendedAMI(selectedAMIDetails)
+                                ? "text-green-900"
+                                : "text-gray-900"
+                            }`}
+                          >
                             Selected Operating System
                           </h4>
                           {isRecommendedAMI(selectedAMIDetails) && (
                             <Star className="w-4 h-4 text-yellow-500" />
                           )}
                         </div>
-                        <p className={`text-sm mt-1 ${
-                          isRecommendedAMI(selectedAMIDetails) ? 'text-green-800' : 'text-gray-800'
-                        }`}>
-                          <strong>{selectedAMIDetails.name}</strong> - {selectedAMIDetails.osVersion}
+                        <p
+                          className={`text-sm mt-1 ${
+                            isRecommendedAMI(selectedAMIDetails)
+                              ? "text-green-800"
+                              : "text-gray-800"
+                          }`}
+                        >
+                          <strong>{selectedAMIDetails.name}</strong> -{" "}
+                          {selectedAMIDetails.osVersion}
                         </p>
-                        <p className={`text-sm mt-1 ${
-                          isRecommendedAMI(selectedAMIDetails) ? 'text-green-700' : 'text-gray-700'
-                        }`}>
-                          Default SSH user: <code className={`px-1 rounded ${
-                            isRecommendedAMI(selectedAMIDetails) ? 'bg-green-100' : 'bg-gray-100'
-                          }`}>{selectedAMIDetails.defaultUsername}</code>
+                        <p
+                          className={`text-sm mt-1 ${
+                            isRecommendedAMI(selectedAMIDetails)
+                              ? "text-green-700"
+                              : "text-gray-700"
+                          }`}
+                        >
+                          Default SSH user:{" "}
+                          <code
+                            className={`px-1 rounded ${
+                              isRecommendedAMI(selectedAMIDetails)
+                                ? "bg-green-100"
+                                : "bg-gray-100"
+                            }`}
+                          >
+                            {selectedAMIDetails.defaultUsername}
+                          </code>
                         </p>
-                        {selectedAMIDetails.platform === 'windows' && (
+                        {selectedAMIDetails.platform === "windows" && (
                           <p className="text-sm text-blue-700 mt-1">
-                            💡 Windows instances use RDP (Remote Desktop) instead of SSH for remote access.
+                            💡 Windows instances use RDP (Remote Desktop)
+                            instead of SSH for remote access.
                           </p>
                         )}
                         {isRecommendedAMI(selectedAMIDetails) && (
                           <p className="text-sm text-green-700 mt-2 font-medium">
-                            🎯 Excellent choice! This AMI is optimized for modern workloads and container support.
+                            🎯 Excellent choice! This AMI is optimized for
+                            modern workloads and container support.
                           </p>
                         )}
                       </div>
@@ -447,36 +625,46 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
               <div className="space-y-4">
                 <Select
                   label="Instance Type"
-                  {...register('instanceType', { required: 'Instance type is required' })}
+                  {...register("instanceType", {
+                    required: "Instance type is required",
+                  })}
                   error={errors.instanceType?.message}
-                  options={instanceTypes.map(type => ({ 
-                    value: type.name, 
-                    label: `${type.name} - ${type.vcpu} vCPU, ${type.memory} GB RAM` 
+                  options={instanceTypes.map((type) => ({
+                    value: type.name,
+                    label: `${type.name} - ${type.vcpu} vCPU, ${type.memory} GB RAM`,
                   }))}
                   placeholder="Select instance type"
                 />
 
                 {selectedInstanceTypeDetails && (
                   <div className="bg-gray-50 p-4 rounded-lg">
-                    <h4 className="font-medium text-gray-900 mb-2">Pricing Information</h4>
+                    <h4 className="font-medium text-gray-900 mb-2">
+                      Pricing Information
+                    </h4>
                     <div className="grid grid-cols-2 gap-4 text-sm">
                       <div>
                         <span className="text-gray-600">On-Demand:</span>
-                        <span className="ml-2 font-medium">${selectedInstanceTypeDetails.onDemandPrice}/hour</span>
+                        <span className="ml-2 font-medium">
+                          ${selectedInstanceTypeDetails.onDemandPrice}/hour
+                        </span>
                       </div>
                       <div>
                         <span className="text-gray-600">Spot Price:</span>
-                        <span className="ml-2 font-medium text-green-600">${selectedInstanceTypeDetails.spotPrice}/hour</span>
+                        <span className="ml-2 font-medium text-green-600">
+                          ${selectedInstanceTypeDetails.spotPrice}/hour
+                        </span>
                       </div>
                     </div>
                     <div className="mt-3">
                       <label className="flex items-center">
                         <input
                           type="checkbox"
-                          {...register('isSpotInstance')}
+                          {...register("isSpotInstance")}
                           className="rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50"
                         />
-                        <span className="ml-2 text-sm text-gray-700">Launch as Spot Instance (up to 90% savings)</span>
+                        <span className="ml-2 text-sm text-gray-700">
+                          Launch as Spot Instance (up to 90% savings)
+                        </span>
                       </label>
                     </div>
                   </div>
@@ -500,7 +688,7 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
                       <label className="flex items-center cursor-pointer">
                         <input
                           type="checkbox"
-                          {...register('installDocker')}
+                          {...register("installDocker")}
                           className="rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50 w-5 h-5"
                         />
                         <span className="ml-3 text-lg font-semibold text-gray-900">
@@ -509,23 +697,74 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
                       </label>
                     </div>
                     <p className="text-sm text-gray-700 mb-4">
-                      Automatically install Docker Engine and Docker Compose on your instance. Perfect for running 
-                      containerized applications, game servers, and microservices.
+                      Automatically install Docker Engine and Docker Compose on
+                      your instance. Perfect for running containerized
+                      applications, game servers, and microservices.
                     </p>
-                    
+
                     {installDocker && (
-                      <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                      <div className="bg-green-50 border border-green-200 rounded-lg p-4 space-y-4">
                         <div className="flex items-center space-x-2 mb-2">
                           <CheckCircle className="w-5 h-5 text-green-600" />
-                          <h4 className="font-medium text-green-900">Docker Installation Enabled</h4>
+                          <h4 className="font-medium text-green-900">
+                            Docker Installation Enabled
+                          </h4>
                         </div>
                         <ul className="text-sm text-green-800 space-y-1">
                           <li>• Latest Docker Engine will be installed</li>
                           <li>• Docker Compose v2 will be available</li>
                           <li>• User will be added to docker group</li>
                           <li>• Docker service will start automatically</li>
-                          <li>• Ready to run containers immediately after boot</li>
+                          <li>
+                            • Ready to run containers immediately after boot
+                          </li>
                         </ul>
+                        {/* Checkbox para usar docker-compose */}
+                        <div className="mt-4">
+                          <label className="flex items-center">
+                            <input
+                              type="checkbox"
+                              {...register("useDockerCompose")}
+                              className="rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50 w-5 h-5"
+                            />
+                            <span className="ml-2 text-md text-gray-900 font-semibold">
+                              Usar docker-compose.yml personalizado
+                            </span>
+                          </label>
+                        </div>
+                        {/* Campos para ruta y contenido del docker-compose.yml */}
+                        {useDockerCompose && (
+                          <div className="space-y-4 mt-4">
+                            <Input
+                              label="Ruta destino (ej: /home/ubuntu/app)"
+                              {...register("dockerComposePath", {
+                                required:
+                                  "La ruta es obligatoria si usas docker-compose",
+                              })}
+                              error={errors.dockerComposePath?.message}
+                              placeholder="/home/ubuntu/app"
+                            />
+                            <div>
+                              <label className="block text-sm font-medium text-gray-700 mb-2">
+                                Contenido de docker-compose.yml
+                              </label>
+                              <textarea
+                                {...register("dockerComposeContent", {
+                                  required:
+                                    "El contenido es obligatorio si usas docker-compose",
+                                })}
+                                rows={8}
+                                className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm font-mono"
+                                placeholder={`version: '3.8'\nservices:\n  app:\n    image: nginx:latest\n    ports:\n      - '80:80'`}
+                              />
+                              {errors.dockerComposeContent && (
+                                <p className="text-sm text-red-600 mt-1">
+                                  {errors.dockerComposeContent.message}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -538,23 +777,41 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
                   <div className="flex items-start space-x-3">
                     <AlertTriangle className="w-5 h-5 text-yellow-600 mt-0.5" />
                     <div>
-                      <h4 className="font-medium text-yellow-900">⚠️ Non-Ubuntu AMI Selected</h4>
+                      <h4 className="font-medium text-yellow-900">
+                        ⚠️ Non-Ubuntu AMI Selected
+                      </h4>
                       <p className="text-sm text-yellow-800 mt-1 mb-3">
-                        You've selected a non-Ubuntu 22.04 AMI with Docker installation enabled. While this may work, 
-                        we recommend Ubuntu 22.04 LTS for the best Docker experience.
+                        You've selected a non-Ubuntu 22.04 AMI with Docker
+                        installation enabled. While this may work, we recommend
+                        Ubuntu 22.04 LTS for the best Docker experience.
                       </p>
                       <div className="bg-yellow-100 border border-yellow-300 rounded p-3">
-                        <h5 className="font-medium text-yellow-900 mb-2">⚠️ Important Considerations:</h5>
+                        <h5 className="font-medium text-yellow-900 mb-2">
+                          ⚠️ Important Considerations:
+                        </h5>
                         <ul className="text-sm text-yellow-800 space-y-1">
-                          <li>• Docker installation script is optimized for Ubuntu</li>
-                          <li>• Other distributions may require manual verification</li>
+                          <li>
+                            • Docker installation script is optimized for Ubuntu
+                          </li>
+                          <li>
+                            • Other distributions may require manual
+                            verification
+                          </li>
                           <li>• Package managers and commands may differ</li>
-                          <li>• You may need to manually install Docker after launch</li>
-                          <li>• SSH terminal access may require different usernames</li>
+                          <li>
+                            • You may need to manually install Docker after
+                            launch
+                          </li>
+                          <li>
+                            • SSH terminal access may require different
+                            usernames
+                          </li>
                         </ul>
                       </div>
                       <p className="text-sm text-yellow-800 mt-3 font-medium">
-                        💡 <strong>Recommendation:</strong> Switch to Ubuntu 22.04 LTS for guaranteed Docker compatibility and optimal performance.
+                        💡 <strong>Recommendation:</strong> Switch to Ubuntu
+                        22.04 LTS for guaranteed Docker compatibility and
+                        optimal performance.
                       </p>
                     </div>
                   </div>
@@ -569,39 +826,79 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
                       <Package className="w-5 h-5 mr-2 text-blue-600" />
                       Container Image Setup (Optional)
                     </h4>
-                    
+
                     <Input
                       label="Docker Image to Pull"
-                      {...register('dockerImageToPull')}
+                      {...register("dockerImageToPull")}
                       placeholder="e.g., nginx:latest, minecraft-server:latest, node:18-alpine"
                       helpText="Specify a Docker image to automatically pull and run after installation"
+                      disabled={useDockerCompose}
                     />
+                    {useDockerCompose && (
+                      <p className="text-xs text-blue-600 mt-1">
+                        Este campo está deshabilitado porque has activado la
+                        opción de <b>docker-compose</b>. El sistema solo
+                        ejecutará el archivo <code>docker-compose.yml</code> que
+                        definas abajo.
+                      </p>
+                    )}
 
                     <div className="mt-4 bg-yellow-50 border border-yellow-200 rounded-lg p-4">
                       <div className="flex items-start space-x-3">
                         <AlertCircle className="w-5 h-5 text-yellow-600 mt-0.5" />
                         <div>
-                          <h5 className="font-medium text-yellow-900">Popular Game Server Images</h5>
+                          <h5 className="font-medium text-yellow-900">
+                            Popular Game Server Images
+                          </h5>
                           <div className="text-sm text-yellow-800 mt-2 space-y-1">
-                            <p><strong>Minecraft Java:</strong> <code className="bg-yellow-100 px-1 rounded">itzg/minecraft-server:latest</code></p>
-                            <p><strong>Minecraft Bedrock:</strong> <code className="bg-yellow-100 px-1 rounded">itzg/minecraft-bedrock-server:latest</code></p>
-                            <p><strong>Palworld:</strong> <code className="bg-yellow-100 px-1 rounded">thijsvanloef/palworld-server-docker:latest</code></p>
-                            <p><strong>Valheim:</strong> <code className="bg-yellow-100 px-1 rounded">lloesche/valheim-server:latest</code></p>
-                            <p><strong>CS2:</strong> <code className="bg-yellow-100 px-1 rounded">joedwards32/cs2:latest</code></p>
+                            <p>
+                              <strong>Minecraft Java:</strong>{" "}
+                              <code className="bg-yellow-100 px-1 rounded">
+                                itzg/minecraft-server:latest
+                              </code>
+                            </p>
+                            <p>
+                              <strong>Minecraft Bedrock:</strong>{" "}
+                              <code className="bg-yellow-100 px-1 rounded">
+                                itzg/minecraft-bedrock-server:latest
+                              </code>
+                            </p>
+                            <p>
+                              <strong>Palworld:</strong>{" "}
+                              <code className="bg-yellow-100 px-1 rounded">
+                                thijsvanloef/palworld-server-docker:latest
+                              </code>
+                            </p>
+                            <p>
+                              <strong>Valheim:</strong>{" "}
+                              <code className="bg-yellow-100 px-1 rounded">
+                                lloesche/valheim-server:latest
+                              </code>
+                            </p>
+                            <p>
+                              <strong>CS2:</strong>{" "}
+                              <code className="bg-yellow-100 px-1 rounded">
+                                joedwards32/cs2:latest
+                              </code>
+                            </p>
                           </div>
                         </div>
                       </div>
                     </div>
 
-                    {selectedAMIDetails?.platform === 'windows' && (
+                    {selectedAMIDetails?.platform === "windows" && (
                       <div className="mt-4 bg-red-50 border border-red-200 rounded-lg p-4">
                         <div className="flex items-start space-x-3">
                           <AlertCircle className="w-5 h-5 text-red-600 mt-0.5" />
                           <div>
-                            <h5 className="font-medium text-red-900">Windows Not Supported</h5>
+                            <h5 className="font-medium text-red-900">
+                              Windows Not Supported
+                            </h5>
                             <p className="text-sm text-red-800 mt-1">
-                              Docker installation is only available for Linux-based AMIs. Please select a Linux distribution 
-                              like Ubuntu, Amazon Linux, or Debian to use this feature.
+                              Docker installation is only available for
+                              Linux-based AMIs. Please select a Linux
+                              distribution like Ubuntu, Amazon Linux, or Debian
+                              to use this feature.
                             </p>
                           </div>
                         </div>
@@ -617,35 +914,47 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
             <div className="space-y-4">
               <Select
                 label="SSH Key Pair"
-                {...register('keyPairId', { required: 'Key pair is required' })}
+                {...register("keyPairId", { required: "Key pair is required" })}
                 error={errors.keyPairId?.message}
-                options={keyPairs.map(kp => ({ 
-                  value: kp.name, 
-                  label: `${kp.name}${kp.privateKey ? ' (SSH Terminal Ready)' : ' (Public Key Only)'}` 
+                options={keyPairs.map((kp) => ({
+                  value: kp.name,
+                  label: `${kp.name}${
+                    kp.privateKey
+                      ? " (SSH Terminal Ready)"
+                      : " (Public Key Only)"
+                  }`,
                 }))}
                 placeholder="Select key pair"
               />
 
               <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                <h4 className="font-medium text-blue-900 mb-2">💡 SSH Terminal Access</h4>
+                <h4 className="font-medium text-blue-900 mb-2">
+                  💡 SSH Terminal Access
+                </h4>
                 <p className="text-sm text-blue-800">
-                  To use the built-in SSH terminal, make sure your key pair includes the private key (.pem file content). 
-                  Key pairs marked as "SSH Terminal Ready" can be used for browser-based SSH access.
+                  To use the built-in SSH terminal, make sure your key pair
+                  includes the private key (.pem file content). Key pairs marked
+                  as "SSH Terminal Ready" can be used for browser-based SSH
+                  access.
                 </p>
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Security Groups</label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Security Groups
+                </label>
                 <div className="space-y-2 max-h-32 overflow-y-auto">
-                  {securityGroups.map(sg => (
+                  {securityGroups.map((sg) => (
                     <label key={sg.id} className="flex items-center">
                       <input
                         type="checkbox"
                         value={sg.id}
-                        {...register('securityGroupIds')}
+                        {...register("securityGroupIds")}
                         className="rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50"
                       />
-                      <span className="ml-2 text-sm text-gray-700">{sg.name} - {sg.description}</span>
+                      <span className="ml-2 text-sm text-gray-700">
+                        {sg.name} - {sg.description}
+                      </span>
                     </label>
                   ))}
                 </div>
@@ -657,44 +966,59 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
             <div className="space-y-6">
               {/* Root Volume Configuration */}
               <div>
-                <h4 className="font-medium text-gray-900 mb-4">Root Volume (Boot Drive)</h4>
+                <h4 className="font-medium text-gray-900 mb-4">
+                  Root Volume (Boot Drive)
+                </h4>
                 <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-4">
                   <div className="flex items-start space-x-3">
                     <HardDrive className="w-5 h-5 text-yellow-600 mt-0.5" />
                     <div>
-                      <h5 className="font-medium text-yellow-900">Root Volume Configuration</h5>
+                      <h5 className="font-medium text-yellow-900">
+                        Root Volume Configuration
+                      </h5>
                       <p className="text-sm text-yellow-800 mt-1">
-                        This is the main drive where the operating system will be installed. 
-                        Default size is 8 GB for most AMIs, but you can increase it if needed.
+                        This is the main drive where the operating system will
+                        be installed. Default size is 8 GB for most AMIs, but
+                        you can increase it if needed.
                         {installDocker && (
                           <span className="block mt-1 font-medium">
-                            💡 Consider at least 20 GB when using Docker for container storage.
+                            💡 Consider at least 20 GB when using Docker for
+                            container storage.
                           </span>
                         )}
                       </p>
                     </div>
                   </div>
                 </div>
-                
+
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <Select
                     label="Root Volume Type"
-                    {...register('rootVolumeType')}
+                    {...register("rootVolumeType")}
                     options={[
-                      { value: 'gp3', label: 'gp3 (General Purpose SSD - Latest)' },
-                      { value: 'gp2', label: 'gp2 (General Purpose SSD)' },
-                      { value: 'io1', label: 'io1 (Provisioned IOPS SSD)' },
-                      { value: 'io2', label: 'io2 (Provisioned IOPS SSD - Latest)' },
+                      {
+                        value: "gp3",
+                        label: "gp3 (General Purpose SSD - Latest)",
+                      },
+                      { value: "gp2", label: "gp2 (General Purpose SSD)" },
+                      { value: "io1", label: "io1 (Provisioned IOPS SSD)" },
+                      {
+                        value: "io2",
+                        label: "io2 (Provisioned IOPS SSD - Latest)",
+                      },
                     ]}
                   />
 
                   <Input
                     label="Root Volume Size (GB)"
                     type="number"
-                    {...register('rootVolumeSize', { 
-                      required: 'Root volume size is required',
-                      min: { value: 8, message: 'Minimum size is 8 GB' },
-                      max: { value: 16384, message: 'Maximum size is 16384 GB' }
+                    {...register("rootVolumeSize", {
+                      required: "Root volume size is required",
+                      min: { value: 8, message: "Minimum size is 8 GB" },
+                      max: {
+                        value: 16384,
+                        message: "Maximum size is 16384 GB",
+                      },
                     })}
                     error={errors.rootVolumeSize?.message}
                     min="8"
@@ -705,10 +1029,12 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
                     <label className="flex items-center">
                       <input
                         type="checkbox"
-                        {...register('rootVolumeEncrypted')}
+                        {...register("rootVolumeEncrypted")}
                         className="rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50"
                       />
-                      <span className="ml-2 text-sm text-gray-700">Encrypt root volume</span>
+                      <span className="ml-2 text-sm text-gray-700">
+                        Encrypt root volume
+                      </span>
                     </label>
                   </div>
                 </div>
@@ -719,10 +1045,13 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
                 <div className="flex items-start space-x-3">
                   <HardDrive className="w-5 h-5 text-blue-600 mt-0.5" />
                   <div>
-                    <h4 className="font-medium text-blue-900">Simplified Storage Configuration</h4>
+                    <h4 className="font-medium text-blue-900">
+                      Simplified Storage Configuration
+                    </h4>
                     <p className="text-sm text-blue-800 mt-1">
-                      This instance will be created with only the root volume for simplicity. 
-                      You can attach additional volumes later from the Volumes section if needed.
+                      This instance will be created with only the root volume
+                      for simplicity. You can attach additional volumes later
+                      from the Volumes section if needed.
                     </p>
                   </div>
                 </div>
@@ -733,15 +1062,19 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
           <Card title="Advanced Configuration (Optional)">
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">User Data Script</label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  User Data Script
+                </label>
                 <textarea
-                  {...register('userData')}
+                  {...register("userData")}
                   rows={4}
                   className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm font-mono"
                   placeholder="#!/bin/bash&#10;apt update -y&#10;# Add your initialization commands here"
                 />
                 <p className="text-xs text-gray-500 mt-1">
-                  Script to run when the instance starts. {installDocker && 'Docker installation script will be automatically added.'}
+                  Script to run when the instance starts.{" "}
+                  {installDocker &&
+                    "Docker installation script will be automatically added."}
                 </p>
               </div>
             </div>
@@ -758,7 +1091,7 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
                   <span className="ml-2">Creating Instance...</span>
                 </>
               ) : (
-                'Launch Instance'
+                "Launch Instance"
               )}
             </Button>
           </div>
