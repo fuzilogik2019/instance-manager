@@ -79,7 +79,7 @@ export class AWSService {
               
               // Get instance name from tags
               const nameTag = instance.Tags?.find(tag => tag.Key === 'Name');
-              const instanceName = nameTag?.Value || instance.InstanceId || 'Unnamed';
+              const instanceName = nameTag?.Value || instance.InstanceId || 'Imported Instance';
 
               // Get all tags
               const tags: Record<string, string> = {};
@@ -212,7 +212,7 @@ export class AWSService {
     }
   }
 
-  // Get available AMIs for a region
+  // Get available AMIs for a region with robust fetching strategy
   async getAMIs(region: string): Promise<AMI[]> {
     if (this.mockMode) {
       return this.getMockAMIs();
@@ -224,49 +224,202 @@ export class AWSService {
     }
 
     try {
-      console.log(`Getting AMIs for region: ${region}`);
+      console.log(`🔍 Starting robust AMI fetching for region: ${region}`);
       
-      // Get popular AMIs from different owners
+      // Fetch AMIs from different sources in parallel
       const amiPromises = [
-        // Amazon Linux 2
-        this.getAMIsByOwnerAndName(regionClient, 'amazon', 'amzn2-ami-hvm-*-x86_64-gp2', 'amazon-linux'),
-        // Ubuntu
-        this.getAMIsByOwnerAndName(regionClient, '099720109477', 'ubuntu/images/hvm-ssd/ubuntu-*-amd64-server-*', 'ubuntu'),
-        // Windows
-        this.getAMIsByOwnerAndName(regionClient, 'amazon', 'Windows_Server-*-English-Full-Base-*', 'windows'),
-        // Red Hat
-        this.getAMIsByOwnerAndName(regionClient, '309956199498', 'RHEL-*-x86_64-*', 'redhat'),
-        // SUSE
-        this.getAMIsByOwnerAndName(regionClient, '013907871322', 'suse-sles-*-v*-hvm-ssd-x86_64', 'suse'),
-        // Debian
-        this.getAMIsByOwnerAndName(regionClient, '136693071363', 'debian-*-amd64-*', 'debian'),
+        this.fetchUbuntuAMIs(regionClient),
+        this.fetchAmazonLinuxAMIs(regionClient),
+        this.fetchWindowsAMIs(regionClient),
+        this.fetchOtherLinuxAMIs(regionClient),
       ];
 
       const amiResults = await Promise.allSettled(amiPromises);
       const allAMIs: AMI[] = [];
 
       amiResults.forEach((result, index) => {
+        const types = ['Ubuntu', 'Amazon Linux', 'Windows', 'Other Linux'];
         if (result.status === 'fulfilled') {
           allAMIs.push(...result.value);
+          console.log(`✅ Found ${result.value.length} ${types[index]} AMIs`);
         } else {
-          console.warn(`Failed to get AMIs for type ${index}:`, result.reason);
+          console.warn(`❌ Failed to get ${types[index]} AMIs:`, result.reason);
         }
       });
 
-      // Sort by OS type and creation date
-      allAMIs.sort((a, b) => {
+      // Remove duplicates based on AMI ID
+      const uniqueAMIs = allAMIs.filter((ami, index, self) => 
+        index === self.findIndex(a => a.id === ami.id)
+      );
+
+      // Sort AMIs with Ubuntu 22.04 first, then by OS type and creation date
+      uniqueAMIs.sort((a, b) => {
+        // Ubuntu 22.04 gets highest priority
+        if (a.osType === 'ubuntu' && a.osVersion === '22.04' && !(b.osType === 'ubuntu' && b.osVersion === '22.04')) {
+          return -1;
+        }
+        if (b.osType === 'ubuntu' && b.osVersion === '22.04' && !(a.osType === 'ubuntu' && a.osVersion === '22.04')) {
+          return 1;
+        }
+        
+        // Then Ubuntu 24.04
+        if (a.osType === 'ubuntu' && a.osVersion === '24.04' && !(b.osType === 'ubuntu' && b.osVersion === '24.04')) {
+          return -1;
+        }
+        if (b.osType === 'ubuntu' && b.osVersion === '24.04' && !(a.osType === 'ubuntu' && a.osVersion === '24.04')) {
+          return 1;
+        }
+        
+        // Then Ubuntu 20.04
+        if (a.osType === 'ubuntu' && a.osVersion === '20.04' && !(b.osType === 'ubuntu' && b.osVersion === '20.04')) {
+          return -1;
+        }
+        if (b.osType === 'ubuntu' && b.osVersion === '20.04' && !(a.osType === 'ubuntu' && a.osVersion === '20.04')) {
+          return 1;
+        }
+        
+        // Then by OS type
         if (a.osType !== b.osType) {
           return a.osType.localeCompare(b.osType);
         }
+        
+        // Finally by creation date (newest first)
         return new Date(b.creationDate).getTime() - new Date(a.creationDate).getTime();
       });
 
-      console.log(`Returning ${allAMIs.length} AMIs for region ${region}`);
-      return allAMIs;
+      console.log(`📊 Returning ${uniqueAMIs.length} AMIs for region ${region}`);
+      
+      // Log Ubuntu counts
+      const ubuntu2204Count = uniqueAMIs.filter(ami => ami.osType === 'ubuntu' && ami.osVersion === '22.04').length;
+      const ubuntu2404Count = uniqueAMIs.filter(ami => ami.osType === 'ubuntu' && ami.osVersion === '24.04').length;
+      const ubuntu2004Count = uniqueAMIs.filter(ami => ami.osType === 'ubuntu' && ami.osVersion === '20.04').length;
+      
+      console.log(`🐧 Ubuntu 22.04 AMIs: ${ubuntu2204Count}`);
+      console.log(`🐧 Ubuntu 24.04 AMIs: ${ubuntu2404Count}`);
+      console.log(`🐧 Ubuntu 20.04 AMIs: ${ubuntu2004Count}`);
+      
+      if (uniqueAMIs.length > 0) {
+        return uniqueAMIs;
+      } else {
+        console.warn('⚠️ No AMIs found from AWS, falling back to mock data');
+        return this.getMockAMIs();
+      }
     } catch (error) {
       console.error('Failed to get AMIs:', error);
       return this.getMockAMIs();
     }
+  }
+
+  // Fetch Ubuntu AMIs with multiple patterns
+  private async fetchUbuntuAMIs(client: EC2Client): Promise<AMI[]> {
+    const ubuntuPatterns = [
+      // Canonical official patterns
+      { owner: '099720109477', pattern: 'ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*' },
+      { owner: '099720109477', pattern: 'ubuntu/images/hvm-ssd/ubuntu-noble-24.04-amd64-server-*' },
+      { owner: '099720109477', pattern: 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-*' },
+      // Alternative patterns
+      { owner: '099720109477', pattern: 'ubuntu-jammy-22.04-amd64-server-*' },
+      { owner: '099720109477', pattern: 'ubuntu-noble-24.04-amd64-server-*' },
+      { owner: '099720109477', pattern: 'ubuntu-focal-20.04-amd64-server-*' },
+      // Broader patterns
+      { owner: '099720109477', pattern: '*ubuntu*22.04*amd64*' },
+      { owner: '099720109477', pattern: '*ubuntu*24.04*amd64*' },
+      { owner: '099720109477', pattern: '*ubuntu*20.04*amd64*' },
+    ];
+
+    const allUbuntuAMIs: AMI[] = [];
+
+    for (const { owner, pattern } of ubuntuPatterns) {
+      try {
+        const amis = await this.getAMIsByOwnerAndName(client, owner, pattern, 'ubuntu');
+        allUbuntuAMIs.push(...amis);
+      } catch (error) {
+        console.warn(`Failed to fetch Ubuntu AMIs with pattern ${pattern}:`, error.message);
+      }
+    }
+
+    // Remove duplicates and return
+    const uniqueAMIs = allUbuntuAMIs.filter((ami, index, self) => 
+      index === self.findIndex(a => a.id === ami.id)
+    );
+
+    console.log(`🐧 Found ${uniqueAMIs.length} Ubuntu AMIs total`);
+    return uniqueAMIs;
+  }
+
+  // Fetch Amazon Linux AMIs
+  private async fetchAmazonLinuxAMIs(client: EC2Client): Promise<AMI[]> {
+    const patterns = [
+      { owner: 'amazon', pattern: 'al2023-ami-*-x86_64' },
+      { owner: 'amazon', pattern: 'amzn2-ami-hvm-*-x86_64-gp2' },
+      { owner: 'amazon', pattern: 'amzn-ami-hvm-*-x86_64-gp2' },
+    ];
+
+    const allAMIs: AMI[] = [];
+
+    for (const { owner, pattern } of patterns) {
+      try {
+        const amis = await this.getAMIsByOwnerAndName(client, owner, pattern, 'amazon-linux');
+        allAMIs.push(...amis);
+      } catch (error) {
+        console.warn(`Failed to fetch Amazon Linux AMIs with pattern ${pattern}:`, error.message);
+      }
+    }
+
+    return allAMIs.filter((ami, index, self) => 
+      index === self.findIndex(a => a.id === ami.id)
+    );
+  }
+
+  // Fetch Windows AMIs
+  private async fetchWindowsAMIs(client: EC2Client): Promise<AMI[]> {
+    const patterns = [
+      { owner: 'amazon', pattern: 'Windows_Server-2022-English-Full-Base-*' },
+      { owner: 'amazon', pattern: 'Windows_Server-2019-English-Full-Base-*' },
+      { owner: 'amazon', pattern: 'Windows_Server-2016-English-Full-Base-*' },
+    ];
+
+    const allAMIs: AMI[] = [];
+
+    for (const { owner, pattern } of patterns) {
+      try {
+        const amis = await this.getAMIsByOwnerAndName(client, owner, pattern, 'windows');
+        allAMIs.push(...amis);
+      } catch (error) {
+        console.warn(`Failed to fetch Windows AMIs with pattern ${pattern}:`, error.message);
+      }
+    }
+
+    return allAMIs.filter((ami, index, self) => 
+      index === self.findIndex(a => a.id === ami.id)
+    );
+  }
+
+  // Fetch other Linux distributions
+  private async fetchOtherLinuxAMIs(client: EC2Client): Promise<AMI[]> {
+    const patterns = [
+      // Red Hat
+      { owner: '309956199498', pattern: 'RHEL-*-x86_64-*', osType: 'redhat' },
+      // SUSE
+      { owner: '013907871322', pattern: 'suse-sles-*-v*-hvm-ssd-x86_64', osType: 'suse' },
+      // Debian
+      { owner: '136693071363', pattern: 'debian-*-amd64-*', osType: 'debian' },
+    ];
+
+    const allAMIs: AMI[] = [];
+
+    for (const { owner, pattern, osType } of patterns) {
+      try {
+        const amis = await this.getAMIsByOwnerAndName(client, owner, pattern, osType);
+        allAMIs.push(...amis);
+      } catch (error) {
+        console.warn(`Failed to fetch ${osType} AMIs with pattern ${pattern}:`, error.message);
+      }
+    }
+
+    return allAMIs.filter((ami, index, self) => 
+      index === self.findIndex(a => a.id === ami.id)
+    );
   }
 
   private async getAMIsByOwnerAndName(client: EC2Client, owner: string, namePattern: string, osType: string): Promise<AMI[]> {
@@ -287,7 +440,7 @@ export class AWSService {
             Values: ['x86_64'],
           },
         ],
-        MaxResults: 20, // Limit to most recent
+        MaxResults: osType === 'ubuntu' ? 50 : 20, // More results for Ubuntu
       });
 
       const response = await client.send(command);
@@ -303,7 +456,7 @@ export class AWSService {
           const dateB = new Date(b.CreationDate || 0);
           return dateB.getTime() - dateA.getTime();
         })
-        .slice(0, 5); // Take top 5 most recent
+        .slice(0, osType === 'ubuntu' ? 20 : 10); // Keep more Ubuntu AMIs
 
       return sortedImages.map(image => ({
         id: image.ImageId!,
@@ -335,12 +488,22 @@ export class AWSService {
   private extractVersionFromName(name: string, osType: string): string {
     switch (osType) {
       case 'amazon-linux':
+        if (name.includes('al2023')) return '2023';
         if (name.includes('amzn2')) return '2';
         if (name.includes('amzn-ami')) return '1';
-        return '2';
+        return '2023';
       case 'ubuntu':
+        // Prioritize Ubuntu 22.04 detection
+        if (name.includes('jammy') || name.includes('22.04')) return '22.04';
+        if (name.includes('noble') || name.includes('24.04')) return '24.04';
+        if (name.includes('focal') || name.includes('20.04')) return '20.04';
+        
+        // Fallback to regex
         const ubuntuMatch = name.match(/ubuntu-(\d+\.\d+)/i);
-        return ubuntuMatch ? ubuntuMatch[1] : '22.04';
+        if (ubuntuMatch) return ubuntuMatch[1];
+        
+        // Default to 22.04 for Ubuntu
+        return '22.04';
       case 'windows':
         if (name.includes('2022')) return '2022';
         if (name.includes('2019')) return '2019';
@@ -375,7 +538,7 @@ export class AWSService {
       case 'debian':
         return 'admin';
       default:
-        return 'ec2-user';
+        return 'ubuntu'; // Default to ubuntu since it's our recommended choice
     }
   }
 
@@ -404,7 +567,7 @@ export class AWSService {
         ],
         isSpotInstance: false,
         launchTime: new Date(Date.now() - 3600000), // 1 hour ago
-        tags: { Name: 'Mock Web Server', Environment: 'Development' },
+        tags: { Name: 'Mock Web Server', Environment: 'Development', DockerInstalled: 'true' },
         statusChecks: {
           instanceStatus: 'ok',
           systemStatus: 'ok',
@@ -439,8 +602,65 @@ export class AWSService {
 
   private getMockAMIs(): AMI[] {
     return [
+      // Ubuntu 22.04 LTS (RECOMMENDED - First in list)
+      {
+        id: 'ami-0a634ae95e11c6f91',
+        name: 'ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-20231207',
+        description: 'Canonical, Ubuntu, 22.04 LTS, amd64 jammy image build on 2023-12-07',
+        platform: 'linux',
+        osType: 'ubuntu',
+        osVersion: '22.04',
+        architecture: 'x86_64',
+        virtualizationType: 'hvm',
+        defaultUsername: 'ubuntu',
+        isPublic: true,
+        creationDate: '2023-12-07T00:00:00.000Z',
+      },
+      // Ubuntu 24.04 LTS
+      {
+        id: 'ami-0123456789abcdef1',
+        name: 'ubuntu/images/hvm-ssd/ubuntu-noble-24.04-amd64-server-20231120',
+        description: 'Canonical, Ubuntu, 24.04 LTS, amd64 noble image build on 2023-11-20',
+        platform: 'linux',
+        osType: 'ubuntu',
+        osVersion: '24.04',
+        architecture: 'x86_64',
+        virtualizationType: 'hvm',
+        defaultUsername: 'ubuntu',
+        isPublic: true,
+        creationDate: '2023-11-20T00:00:00.000Z',
+      },
+      // Ubuntu 20.04 LTS
+      {
+        id: 'ami-0123456789abcdef0',
+        name: 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20231120',
+        description: 'Canonical, Ubuntu, 20.04 LTS, amd64 focal image build on 2023-11-20',
+        platform: 'linux',
+        osType: 'ubuntu',
+        osVersion: '20.04',
+        architecture: 'x86_64',
+        virtualizationType: 'hvm',
+        defaultUsername: 'ubuntu',
+        isPublic: true,
+        creationDate: '2023-11-20T00:00:00.000Z',
+      },
+      // Amazon Linux 2023
       {
         id: 'ami-0abcdef1234567890',
+        name: 'al2023-ami-2023.2.20231116.0-kernel-6.1-x86_64',
+        description: 'Amazon Linux 2023 AMI (HVM) - Kernel 6.1, SSD Volume Type',
+        platform: 'linux',
+        osType: 'amazon-linux',
+        osVersion: '2023',
+        architecture: 'x86_64',
+        virtualizationType: 'hvm',
+        defaultUsername: 'ec2-user',
+        isPublic: true,
+        creationDate: '2023-11-16T00:00:00.000Z',
+      },
+      // Amazon Linux 2
+      {
+        id: 'ami-0abcdef1234567891',
         name: 'amzn2-ami-hvm-2.0.20231116.0-x86_64-gp2',
         description: 'Amazon Linux 2 AMI (HVM) - Kernel 5.10, SSD Volume Type',
         platform: 'linux',
@@ -452,19 +672,7 @@ export class AWSService {
         isPublic: true,
         creationDate: '2023-11-16T00:00:00.000Z',
       },
-      {
-        id: 'ami-0123456789abcdef0',
-        name: 'ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-20231120',
-        description: 'Canonical, Ubuntu, 22.04 LTS, amd64 jammy image build on 2023-11-20',
-        platform: 'linux',
-        osType: 'ubuntu',
-        osVersion: '22.04',
-        architecture: 'x86_64',
-        virtualizationType: 'hvm',
-        defaultUsername: 'ubuntu',
-        isPublic: true,
-        creationDate: '2023-11-20T00:00:00.000Z',
-      },
+      // Windows Server 2022
       {
         id: 'ami-0fedcba9876543210',
         name: 'Windows_Server-2022-English-Full-Base-2023.11.15',
@@ -477,6 +685,48 @@ export class AWSService {
         defaultUsername: 'Administrator',
         isPublic: true,
         creationDate: '2023-11-15T00:00:00.000Z',
+      },
+      // Red Hat Enterprise Linux 9
+      {
+        id: 'ami-0redhat123456789',
+        name: 'RHEL-9.2.0_HVM-20231101-x86_64-0-Hourly2-GP2',
+        description: 'Red Hat Enterprise Linux 9.2 (HVM), SSD Volume Type',
+        platform: 'linux',
+        osType: 'redhat',
+        osVersion: '9',
+        architecture: 'x86_64',
+        virtualizationType: 'hvm',
+        defaultUsername: 'ec2-user',
+        isPublic: true,
+        creationDate: '2023-11-01T00:00:00.000Z',
+      },
+      // SUSE Linux Enterprise Server 15
+      {
+        id: 'ami-0suse123456789',
+        name: 'suse-sles-15-sp5-v20231101-hvm-ssd-x86_64',
+        description: 'SUSE Linux Enterprise Server 15 SP5 (HVM), SSD Volume Type',
+        platform: 'linux',
+        osType: 'suse',
+        osVersion: '15',
+        architecture: 'x86_64',
+        virtualizationType: 'hvm',
+        defaultUsername: 'ec2-user',
+        isPublic: true,
+        creationDate: '2023-11-01T00:00:00.000Z',
+      },
+      // Debian 12
+      {
+        id: 'ami-0debian123456789',
+        name: 'debian-12-amd64-20231013-1532',
+        description: 'Debian 12 (bookworm) amd64 build 20231013-1532',
+        platform: 'linux',
+        osType: 'debian',
+        osVersion: '12',
+        architecture: 'x86_64',
+        virtualizationType: 'hvm',
+        defaultUsername: 'admin',
+        isPublic: true,
+        creationDate: '2023-10-13T00:00:00.000Z',
       },
     ];
   }
@@ -503,15 +753,32 @@ export class AWSService {
         Value: request.name,
       });
 
+      // Add Docker installation tag if enabled
+      if (request.installDocker) {
+        tags.push({
+          Key: 'DockerInstalled',
+          Value: 'true',
+        });
+      }
+
       // Add other tags, but skip if Name already exists
       Object.entries(request.tags).forEach(([key, value]) => {
-        if (key !== 'Name') {
+        if (key !== 'Name' && key !== 'DockerInstalled') {
           tags.push({
             Key: key,
             Value: value,
           });
         }
       });
+
+      // Prepare user data script
+      let userData = request.userData || '';
+      
+      // Add Docker installation script if requested
+      if (request.installDocker) {
+        const dockerScript = this.generateDockerInstallScript(request.dockerImageToPull);
+        userData = userData ? `${userData}\n\n${dockerScript}` : dockerScript;
+      }
 
       const command = new RunInstancesCommand({
         ImageId: request.amiId,
@@ -520,7 +787,7 @@ export class AWSService {
         MaxCount: 1,
         KeyName: request.keyPairId,
         SecurityGroupIds: request.securityGroupIds.length > 0 ? request.securityGroupIds : ['default'],
-        UserData: request.userData ? Buffer.from(request.userData).toString('base64') : undefined,
+        UserData: userData ? Buffer.from(userData).toString('base64') : undefined,
         BlockDeviceMappings: request.volumes.map((volume, index) => ({
           DeviceName: index === 0 ? '/dev/xvda' : `/dev/xvd${String.fromCharCode(98 + index)}`,
           Ebs: {
@@ -583,6 +850,103 @@ export class AWSService {
       console.error('Failed to launch instance:', error);
       throw error;
     }
+  }
+
+  // Generate Docker installation script
+  private generateDockerInstallScript(dockerImageToPull?: string): string {
+    let script = `#!/bin/bash
+
+# Docker Installation Script
+echo "🐳 Starting Docker installation..."
+
+# Update system
+apt-get update -y
+
+# Install required packages
+apt-get install -y \\
+    ca-certificates \\
+    curl \\
+    gnupg \\
+    lsb-release
+
+# Add Docker's official GPG key
+mkdir -p /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+
+# Set up the repository
+echo \\
+  "deb [arch=\$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \\
+  \$(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# Update package index
+apt-get update -y
+
+# Install Docker Engine
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+# Start and enable Docker
+systemctl start docker
+systemctl enable docker
+
+# Add ubuntu user to docker group
+usermod -aG docker ubuntu
+
+# Verify installation
+docker --version
+docker compose version
+
+echo "✅ Docker installation completed!"
+
+# Create docker-compose.yml directory
+mkdir -p /home/ubuntu/docker
+chown ubuntu:ubuntu /home/ubuntu/docker
+`;
+
+    // Add Docker image pull and run if specified
+    if (dockerImageToPull) {
+      script += `
+# Pull and run specified Docker image
+echo "🚀 Pulling and starting Docker image: ${dockerImageToPull}"
+
+# Pull the image
+docker pull ${dockerImageToPull}
+
+# Create a basic docker-compose.yml for the image
+cat > /home/ubuntu/docker/docker-compose.yml << EOF
+version: '3.8'
+services:
+  app:
+    image: ${dockerImageToPull}
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "25565:25565"
+      - "19132:19132/udp"
+    volumes:
+      - ./data:/data
+    environment:
+      - EULA=TRUE
+EOF
+
+# Change ownership
+chown ubuntu:ubuntu /home/ubuntu/docker/docker-compose.yml
+
+# Start the container
+cd /home/ubuntu/docker
+docker compose up -d
+
+echo "🎮 Docker container started with image: ${dockerImageToPull}"
+echo "📁 Docker Compose file created at: /home/ubuntu/docker/docker-compose.yml"
+`;
+    }
+
+    script += `
+echo "🎉 Setup completed! Docker is ready to use."
+echo "💡 Use 'docker ps' to see running containers"
+echo "💡 Use 'docker compose up -d' in /home/ubuntu/docker to start services"
+`;
+
+    return script;
   }
 
   // Wait for instance to be in running state

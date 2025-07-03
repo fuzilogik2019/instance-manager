@@ -5,6 +5,7 @@ import InstancesList from './components/instances/InstancesList';
 import SecurityGroupsList from './components/securitygroups/SecurityGroupsList';
 import KeyPairsList from './components/keypairs/KeyPairsList';
 import VolumesList from './components/volumes/VolumesList';
+import SSHTerminalManager from './components/terminal/SSHTerminalManager';
 
 const queryClient = new QueryClient();
 
@@ -30,6 +31,8 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <Layout activeTab={activeTab} onTabChange={setActiveTab}>
         {renderContent()}
+        {/* Terminal Manager - Persiste a través de todas las secciones */}
+        <SSHTerminalManager />
       </Layout>
     </QueryClientProvider>
   );

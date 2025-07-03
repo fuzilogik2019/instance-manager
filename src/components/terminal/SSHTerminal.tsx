@@ -20,6 +20,8 @@ interface SSHTerminalProps {
   keyPairName: string;
   host: string;
   onClose: () => void;
+  onMinimize?: () => void;
+  isMinimized: boolean;
 }
 
 export default function SSHTerminal({
@@ -28,6 +30,8 @@ export default function SSHTerminal({
   keyPairName,
   host,
   onClose,
+  onMinimize,
+  isMinimized,
 }: SSHTerminalProps) {
   const terminalRef = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | null>(null);
@@ -47,7 +51,6 @@ export default function SSHTerminal({
   // Update refs when state changes
   useEffect(() => {
     isConnectedRef.current = isConnected;
-    console.log("Updated isConnectedRef to:", isConnected);
   }, [isConnected]);
 
   useEffect(() => {
@@ -59,12 +62,14 @@ export default function SSHTerminal({
   }, [socket.current]);
 
   useEffect(() => {
-    initializeTerminal();
-    connectToSSH();
+    if (!isMinimized) {
+      initializeTerminal();
+      connectToSSH();
+    }
 
     // Handle window resize
     const handleResize = () => {
-      if (fitAddon.current && terminal.current) {
+      if (fitAddon.current && terminal.current && !isMinimized) {
         setTimeout(() => {
           fitAddon.current?.fit();
         }, 100);
@@ -75,12 +80,16 @@ export default function SSHTerminal({
 
     return () => {
       window.removeEventListener("resize", handleResize);
+      if (isMinimized) {
+        // Don't cleanup when minimizing, just hide
+        return;
+      }
       cleanup();
     };
-  }, []);
+  }, [isMinimized]);
 
   const initializeTerminal = () => {
-    if (!terminalRef.current) return;
+    if (!terminalRef.current || isMinimized) return;
 
     // Create terminal instance with better configuration
     terminal.current = new Terminal({
@@ -140,50 +149,17 @@ export default function SSHTerminal({
       }
     }, 100);
 
-    // Handle terminal input - CRITICAL: This handles all keyboard input
+    // Handle terminal input
     terminal.current.onData((data) => {
-      console.log("🎹 Terminal input received:", {
-        data: data,
-        charCode: data.charCodeAt(0),
-        length: data.length,
-        isConnected: isConnectedRef.current,
-        hasSocket: !!socketRef.current,
-      });
-
-      // Always try to send input if we have a socket connection
       if (socketRef.current) {
-        console.log("📤 Sending input to server via socket");
         socketRef.current.emit("ssh:input", { input: data });
-      } else {
-        console.warn("⚠️ No socket connection available for input");
-        if (terminal.current && !isConnectingRef.current) {
-          // Show a visual indicator that the terminal is not ready
-          if (data === "\r") {
-            // Enter key
-            terminal.current.write(
-              "\r\n\x1b[31m❌ No socket connection. Please reconnect.\x1b[0m\r\n"
-            );
-          }
-        }
       }
     });
 
     // Handle terminal resize
     terminal.current.onResize(({ cols, rows }) => {
-      console.log("📐 Terminal resized:", cols, rows);
       if (socketRef.current && isConnectedRef.current) {
         socketRef.current.emit("ssh:resize", { cols, rows });
-      }
-    });
-
-    // Handle terminal selection
-    terminal.current.onSelectionChange(() => {
-      const selection = terminal.current?.getSelection();
-      if (selection) {
-        // Allow copying selected text
-        navigator.clipboard.writeText(selection).catch(() => {
-          // Fallback for older browsers
-        });
       }
     });
 
@@ -206,14 +182,11 @@ export default function SSHTerminal({
       `\x1b[1;36mKey Pair: \x1b[1;33m${keyPairName}\x1b[0m`
     );
     terminal.current.writeln("");
-    terminal.current.writeln("\x1b[1;33m💡 Debug Info:\x1b[0m");
-    terminal.current.writeln(`   • Socket connection: Initializing...`);
-    terminal.current.writeln(`   • Server URL: http://localhost:3001`);
-    terminal.current.writeln(`   • Instance ID: ${instanceId}`);
-    terminal.current.writeln("");
   };
 
   const connectToSSH = () => {
+    if (isMinimized) return;
+    
     setIsConnecting(true);
     isConnectingRef.current = true;
     setConnectionStatus("Connecting to server...");
@@ -224,19 +197,17 @@ export default function SSHTerminal({
       );
     }
 
-    // Create socket connection with better configuration
+    // Create socket connection
     socket.current = io("http://localhost:3001", {
       transports: ["websocket"],
       timeout: 20000,
-      forceNew: true, // Force a new connection
-      reconnection: false, // Disable automatic reconnection to avoid conflicts
+      forceNew: true,
+      reconnection: false,
     });
 
-    // Update the ref immediately
     socketRef.current = socket.current;
 
     socket.current.on("connect", () => {
-      console.log("🔌 Connected to SSH service");
       setConnectionStatus("Establishing SSH connection...");
 
       if (terminal.current) {
@@ -248,17 +219,14 @@ export default function SSHTerminal({
         );
       }
 
-      // Request SSH connection
       socket.current?.emit("ssh:connect", {
         instanceId,
         keyPairName,
-        username: "ec2-user", // Default for Amazon Linux 2
+        username: "ubuntu", // Default for Ubuntu
       });
     });
 
     socket.current.on("ssh:connected", (data) => {
-      console.log("✅ SSH connection established:", data);
-      console.log("Setting isConnected to true...");
       setIsConnected(true);
       isConnectedRef.current = true;
       setIsConnecting(false);
@@ -273,19 +241,11 @@ export default function SSHTerminal({
         terminal.current.writeln(
           "\x1b[1;33m💡 Terminal is ready! You can now type commands.\x1b[0m"
         );
-        terminal.current.writeln(
-          "\x1b[1;36m💡 Press Enter to see the shell prompt.\x1b[0m"
-        );
-        terminal.current.writeln(
-          "\x1b[1;32m🔍 Debug: Connection state updated to CONNECTED\x1b[0m"
-        );
         terminal.current.writeln("");
 
-        // Focus the terminal after connection
         setTimeout(() => {
           if (terminal.current) {
             terminal.current.focus();
-            console.log("Terminal focused after connection");
           }
         }, 100);
       }
@@ -298,8 +258,6 @@ export default function SSHTerminal({
     });
 
     socket.current.on("ssh:error", (error) => {
-      console.error("❌ SSH error:", error);
-      console.log("Setting isConnected to false due to SSH error");
       setIsConnecting(false);
       isConnectingRef.current = false;
       setIsConnected(false);
@@ -310,78 +268,35 @@ export default function SSHTerminal({
         terminal.current.writeln(
           `\x1b[1;31m❌ Connection failed: ${error.message}\x1b[0m`
         );
-        terminal.current.writeln("");
-        terminal.current.writeln("\x1b[1;33m💡 Troubleshooting tips:\x1b[0m");
-        terminal.current.writeln("   • Make sure the instance is running");
-        terminal.current.writeln(
-          "   • Check security group allows SSH (port 22)"
-        );
-        terminal.current.writeln("   • Verify the SSH key pair is correct");
-        terminal.current.writeln("   • Ensure the instance has a public IP");
-        terminal.current.writeln(
-          "   • Upload the private key (.pem file) for this key pair"
-        );
-        terminal.current.writeln("");
-        terminal.current.writeln(
-          "\x1b[1;36m🔄 You can try to reconnect or check the server logs.\x1b[0m"
-        );
-        terminal.current.writeln("");
       }
     });
 
     socket.current.on("ssh:disconnected", (data) => {
-      console.log("🔌 SSH disconnected:", data);
       setIsConnected(false);
       isConnectedRef.current = false;
       setConnectionStatus("Disconnected");
 
       if (terminal.current) {
         terminal.current.writeln(`\x1b[1;33m🔌 ${data.message}\x1b[0m`);
-        terminal.current.writeln(
-          "\x1b[1;31mConnection closed. You can close this terminal.\x1b[0m"
-        );
       }
     });
 
     socket.current.on("disconnect", () => {
-      console.log("🔌 Socket disconnected");
       setIsConnected(false);
       isConnectedRef.current = false;
       setConnectionStatus("Disconnected");
-
-      // Clear the socket ref
       socketRef.current = null;
-
-      if (terminal.current) {
-        terminal.current.writeln(
-          "\x1b[1;31m🔌 Connection to server lost\x1b[0m"
-        );
-      }
     });
 
     socket.current.on("connect_error", (error) => {
-      console.error("🔌 Socket connection error:", error);
       setIsConnecting(false);
       isConnectingRef.current = false;
       setConnectionStatus("Connection failed");
-
-      // Clear the socket ref
       socketRef.current = null;
-
-      if (terminal.current) {
-        terminal.current.writeln(
-          "\x1b[1;31m❌ Failed to connect to SSH service\x1b[0m"
-        );
-        terminal.current.writeln(
-          "\x1b[1;33mPlease check if the server is running\x1b[0m"
-        );
-      }
     });
   };
 
   const cleanup = () => {
-    console.log("🧹 Cleaning up SSH terminal...");
-
     if (socket.current) {
       socket.current.disconnect();
       socket.current = null;
@@ -394,43 +309,10 @@ export default function SSHTerminal({
     }
   };
 
-  const reconnect = () => {
-    console.log("🔄 Attempting to reconnect...");
-
-    // Cleanup existing connection
-    if (socket.current) {
-      socket.current.disconnect();
-      socket.current = null;
-      socketRef.current = null;
-    }
-
-    // Reset states
-    setIsConnected(false);
-    isConnectedRef.current = false;
-    setIsConnecting(false);
-    isConnectingRef.current = false;
-    setConnectionStatus("Reconnecting...");
-
-    // Clear terminal and show reconnection message
-    if (terminal.current) {
-      terminal.current.clear();
-      terminal.current.writeln(
-        "\x1b[1;33m🔄 Reconnecting to SSH service...\x1b[0m"
-      );
-      terminal.current.writeln("");
-    }
-
-    // Attempt reconnection after a brief delay
-    setTimeout(() => {
-      connectToSSH();
-    }, 1000);
-  };
-
   const handleResize = () => {
-    if (fitAddon.current) {
+    if (fitAddon.current && !isMinimized) {
       setTimeout(() => {
         fitAddon.current?.fit();
-        // Re-focus terminal after resize
         if (terminal.current) {
           terminal.current.focus();
         }
@@ -443,13 +325,6 @@ export default function SSHTerminal({
     setTimeout(() => {
       handleResize();
     }, 100);
-  };
-
-  const handleTerminalClick = () => {
-    // Ensure terminal is focused when clicked
-    if (terminal.current) {
-      terminal.current.focus();
-    }
   };
 
   const getStatusColor = () => {
@@ -466,6 +341,11 @@ export default function SSHTerminal({
       );
     return <WifiOff className="w-4 h-4 text-red-400" />;
   };
+
+  // Don't render if minimized
+  if (isMinimized) {
+    return null;
+  }
 
   return (
     <div
@@ -486,16 +366,15 @@ export default function SSHTerminal({
           </div>
         </div>
         <div className="flex items-center space-x-2">
-          {/* Reconnect button - only show when not connected and not connecting */}
-          {!isConnected && !isConnecting && (
+          {onMinimize && (
             <Button
               size="sm"
               variant="secondary"
-              onClick={reconnect}
-              className="p-1 bg-blue-600 hover:bg-blue-700 border-blue-600 text-white"
-              title="Reconnect"
+              onClick={onMinimize}
+              className="p-1 bg-gray-700 hover:bg-gray-600 border-gray-600"
+              title="Minimize"
             >
-              🔄
+              <Minimize2 className="w-4 h-4" />
             </Button>
           )}
           <Button
@@ -527,7 +406,7 @@ export default function SSHTerminal({
         style={{
           height: isMaximized ? "calc(100% - 80px)" : "560px",
         }}
-        onClick={handleTerminalClick}
+        onClick={() => terminal.current?.focus()}
       >
         <div
           ref={terminalRef}
@@ -550,30 +429,6 @@ export default function SSHTerminal({
             </div>
           </div>
         )}
-
-        {/* Input hint overlay for disconnected state */}
-        {!isConnected && !isConnecting && (
-          <div className="absolute bottom-4 left-4 right-4 bg-gray-800 bg-opacity-90 text-white p-3 rounded-lg">
-            <p className="text-sm">
-              ⚠️ Terminal not connected. Please check the connection status
-              above.
-            </p>
-            <button
-              onClick={reconnect}
-              className="mt-2 px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded"
-            >
-              🔄 Try Reconnect
-            </button>
-          </div>
-        )}
-
-        {/* Ready indicator when connected */}
-        {isConnected && (
-          <div className="absolute top-4 right-4 bg-green-600 bg-opacity-90 text-white px-3 py-1 rounded-lg text-xs flex items-center">
-            <span className="w-2 h-2 bg-green-300 rounded-full mr-2 animate-pulse"></span>
-            Terminal Ready - Type commands
-          </div>
-        )}
       </div>
 
       {/* Terminal Footer */}
@@ -581,7 +436,7 @@ export default function SSHTerminal({
         <div className="flex items-center justify-between text-xs text-gray-600">
           <div className="flex items-center space-x-4">
             <span>Host: {host}</span>
-            <span>User: ec2-user</span>
+            <span>User: ubuntu</span>
             <span>Key: {keyPairName}</span>
           </div>
           <div className="flex items-center space-x-2">

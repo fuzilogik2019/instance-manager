@@ -21,7 +21,7 @@ export async function deployInstance(
     const awsService = new AWSService(request.region);
     const result = await awsService.launchInstance(request);
     
-    console.log(`Instance ${instanceId} deployed successfully:`, result);
+    console.log(`✅ Instance ${instanceId} deployed successfully:`, result);
     return result;
   } catch (error) {
     console.error(`Failed to deploy instance ${instanceId}:`, error);

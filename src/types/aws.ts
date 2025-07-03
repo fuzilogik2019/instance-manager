@@ -104,4 +104,6 @@ export interface InstanceCreationRequest {
   isSpotInstance: boolean;
   userData?: string;
   tags: Record<string, string>;
+  installDocker?: boolean;
+  dockerImageToPull?: string;
 }

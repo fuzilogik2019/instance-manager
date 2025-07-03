@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Server, Play, Square, Trash2, RefreshCw, Plus, ExternalLink, AlertTriangle, Terminal, Monitor, Smartphone, Clock, CheckCircle, XCircle } from 'lucide-react';
+import { Server, Play, Square, Trash2, RefreshCw, Plus, ExternalLink, AlertTriangle, Terminal, Monitor, Smartphone, Clock, CheckCircle, XCircle, Container, Activity } from 'lucide-react';
 import { EC2Instance } from '../../types/aws';
 import { getInstances, startInstance, stopInstance, terminateInstance } from '../../services/api';
 import Button from '../ui/Button';
@@ -7,14 +7,14 @@ import Badge from '../ui/Badge';
 import Card from '../ui/Card';
 import LoadingSpinner from '../ui/LoadingSpinner';
 import InstanceCreationForm from './InstanceCreationForm';
-import SSHTerminal from '../terminal/SSHTerminal';
+import DockerServicesModal from './DockerServicesModal';
 
 export default function InstancesList() {
   const [instances, setInstances] = useState<EC2Instance[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
-  const [activeTerminals, setActiveTerminals] = useState<Set<string>>(new Set());
+  const [showDockerServices, setShowDockerServices] = useState<string | null>(null);
 
   useEffect(() => {
     loadInstances();
@@ -63,7 +63,6 @@ export default function InstancesList() {
       if (!confirm('Spot instances cannot be stopped - they can only be terminated. This will permanently destroy the instance. Are you sure you want to continue?')) {
         return;
       }
-      // For spot instances, terminate instead of stop
       await handleTerminate(instanceId);
       return;
     }
@@ -117,27 +116,29 @@ export default function InstancesList() {
       return;
     }
 
-    // Check if it's a Windows instance
     if (instance.ami?.platform === 'windows') {
       alert('Windows instances use RDP (Remote Desktop Protocol) for remote access, not SSH. Please use an RDP client to connect.');
       return;
     }
 
-    // Check status checks
     if (instance.statusChecks && !instance.statusChecks.isSSHReady) {
       alert('Instance is still initializing. Please wait for status checks to complete before attempting SSH connection.');
       return;
     }
 
-    setActiveTerminals(prev => new Set(prev).add(instance.id));
+    // Use the global terminal manager
+    if ((window as any).openSSHTerminal) {
+      (window as any).openSSHTerminal(
+        instance.id,
+        instance.name,
+        instance.keyPairName,
+        instance.publicIp || instance.privateIp
+      );
+    }
   };
 
-  const handleCloseTerminal = (instanceId: string) => {
-    setActiveTerminals(prev => {
-      const newSet = new Set(prev);
-      newSet.delete(instanceId);
-      return newSet;
-    });
+  const handleViewDockerServices = (instanceId: string) => {
+    setShowDockerServices(instanceId);
   };
 
   const getStateColor = (state: string) => {
@@ -198,6 +199,13 @@ export default function InstancesList() {
            (!instance.statusChecks || instance.statusChecks.isSSHReady);
   };
 
+  const hasDockerInstalled = (instance: EC2Instance) => {
+    // Check if instance was created with Docker installation
+    return instance.tags?.DockerInstalled === 'true' || 
+           instance.tags?.docker === 'true' ||
+           instance.name.toLowerCase().includes('docker');
+  };
+
   const getStatusChecksBadge = (instance: EC2Instance) => {
     if (!instance.statusChecks) return null;
 
@@ -232,6 +240,22 @@ export default function InstancesList() {
   const getInstanceActions = (instance: EC2Instance) => {
     const actions = [];
 
+    // Docker Services button - only for running instances with Docker
+    if (instance.state === 'running' && hasDockerInstalled(instance)) {
+      actions.push(
+        <Button
+          key="docker"
+          size="sm"
+          variant="primary"
+          onClick={() => handleViewDockerServices(instance.id)}
+          title="View Docker Services"
+          className="bg-blue-600 hover:bg-blue-700 focus:ring-blue-500"
+        >
+          <Container className="w-4 h-4" />
+        </Button>
+      );
+    }
+
     // SSH Terminal button - only for running Linux instances with SSH key and ready status
     if (canUseSSHTerminal(instance)) {
       actions.push(
@@ -240,7 +264,6 @@ export default function InstancesList() {
           size="sm"
           variant="primary"
           onClick={() => handleOpenTerminal(instance)}
-          disabled={activeTerminals.has(instance.id)}
           title="Open SSH Terminal"
           className="bg-green-600 hover:bg-green-700 focus:ring-green-500"
         >
@@ -377,6 +400,12 @@ export default function InstancesList() {
                       {instance.isSpotInstance && (
                         <Badge variant="warning" size="sm">Spot</Badge>
                       )}
+                      {hasDockerInstalled(instance) && (
+                        <Badge variant="primary" size="sm">
+                          <Container className="w-3 h-3 mr-1" />
+                          Docker
+                        </Badge>
+                      )}
                       {getStatusChecksBadge(instance)}
                       {canUseSSHTerminal(instance) && (
                         <Badge variant="success" size="sm">
@@ -406,6 +435,32 @@ export default function InstancesList() {
                 </div>
               </div>
 
+              {/* Docker Services Info */}
+              {hasDockerInstalled(instance) && instance.state === 'running' && (
+                <div className="mt-4 bg-blue-50 border border-blue-200 rounded-lg p-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      <Container className="w-5 h-5 text-blue-600" />
+                      <div>
+                        <h4 className="font-medium text-blue-900">Docker Services Available</h4>
+                        <p className="text-sm text-blue-800">
+                          This instance has Docker installed. Click the Docker button to view running containers and services.
+                        </p>
+                      </div>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      onClick={() => handleViewDockerServices(instance.id)}
+                      className="bg-blue-600 hover:bg-blue-700"
+                    >
+                      <Activity className="w-4 h-4 mr-1" />
+                      View Services
+                    </Button>
+                  </div>
+                </div>
+              )}
+
               {instance.isSpotInstance && instance.state === 'running' && (
                 <div className="mt-4 bg-yellow-50 border border-yellow-200 rounded-lg p-3">
                   <div className="flex items-start space-x-2">
@@ -432,38 +487,6 @@ export default function InstancesList() {
                         The instance is running but still completing initialization. 
                         Status checks: Instance ({instance.statusChecks.instanceStatus}), System ({instance.statusChecks.systemStatus}).
                         SSH access will be available once all checks pass.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* SSH Terminal Notice */}
-              {instance.state === 'running' && (!instance.keyPairName || instance.keyPairName === 'N/A') && instance.ami?.platform !== 'windows' && (
-                <div className="mt-4 bg-blue-50 border border-blue-200 rounded-lg p-3">
-                  <div className="flex items-start space-x-2">
-                    <Terminal className="w-5 h-5 text-blue-600 mt-0.5" />
-                    <div>
-                      <h4 className="font-medium text-blue-900">SSH Terminal Unavailable</h4>
-                      <p className="text-sm text-blue-800 mt-1">
-                        This instance doesn't have an SSH key pair configured. To use the SSH terminal, 
-                        launch a new instance with a key pair that includes the private key.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Windows RDP Notice */}
-              {instance.ami?.platform === 'windows' && instance.state === 'running' && (
-                <div className="mt-4 bg-blue-50 border border-blue-200 rounded-lg p-3">
-                  <div className="flex items-start space-x-2">
-                    <Monitor className="w-5 h-5 text-blue-600 mt-0.5" />
-                    <div>
-                      <h4 className="font-medium text-blue-900">Windows Remote Access</h4>
-                      <p className="text-sm text-blue-800 mt-1">
-                        This Windows instance uses RDP (Remote Desktop Protocol) for remote access. 
-                        Use an RDP client to connect to <strong>{instance.publicIp || instance.privateIp}</strong>
                       </p>
                     </div>
                   </div>
@@ -537,27 +560,18 @@ export default function InstancesList() {
         </div>
       )}
 
-      {/* SSH Terminals */}
-      {Array.from(activeTerminals).map(instanceId => {
-        const instance = instances.find(i => i.id === instanceId);
-        if (!instance) return null;
-
-        return (
-          <SSHTerminal
-            key={instanceId}
-            instanceId={instance.id}
-            instanceName={instance.name}
-            keyPairName={instance.keyPairName}
-            host={instance.publicIp || instance.privateIp}
-            onClose={() => handleCloseTerminal(instanceId)}
-          />
-        );
-      })}
-
       {showCreateForm && (
         <InstanceCreationForm
           onInstanceCreated={loadInstances}
           onClose={() => setShowCreateForm(false)}
+        />
+      )}
+
+      {showDockerServices && (
+        <DockerServicesModal
+          instanceId={showDockerServices}
+          instanceName={instances.find(i => i.id === showDockerServices)?.name || 'Unknown'}
+          onClose={() => setShowDockerServices(null)}
         />
       )}
     </div>
