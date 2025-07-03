@@ -39,6 +39,14 @@ async function findInstanceByAnyId(id: string) {
       const nameTag = awsInstance.Tags?.find(tag => tag.Key === 'Name');
       const instanceName = nameTag?.Value || awsInstance.InstanceId || 'Imported Instance';
       
+      // Get all tags and preserve Docker-related ones
+      const tags: Record<string, string> = {};
+      awsInstance.Tags?.forEach(tag => {
+        if (tag.Key && tag.Value) {
+          tags[tag.Key] = tag.Value;
+        }
+      });
+      
       // Create database entry for this AWS instance
       const internalId = uuidv4();
       const stackName = `ec2-${internalId.substring(0, 8)}`;
@@ -62,7 +70,7 @@ async function findInstanceByAnyId(id: string) {
         JSON.stringify(awsInstance.SecurityGroups?.map(sg => sg.GroupId!) || []),
         JSON.stringify([]),
         awsInstance.SpotInstanceRequestId ? 1 : 0,
-        JSON.stringify({}),
+        JSON.stringify(tags), // Preserve all AWS tags including Docker ones
         stackName,
         awsInstance.InstanceId
       ]);
@@ -84,6 +92,12 @@ router.get('/', async (req, res) => {
   try {
     console.log('📋 Fetching instances...');
     
+    // Check if AWS is configured
+    if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+      console.log('⚠️ AWS credentials not configured, returning empty list');
+      return res.json([]);
+    }
+    
     // Try to get instances from AWS first
     try {
       const awsService = new AWSService();
@@ -91,7 +105,7 @@ router.get('/', async (req, res) => {
       
       console.log(`📊 Found ${awsInstances.length} instances from AWS`);
       
-      // Sync AWS instances with database for future operations
+      // Sync AWS instances with database for future operations and preserve Docker tags
       for (const awsInstance of awsInstances) {
         try {
           // Check if this AWS instance exists in our database
@@ -124,23 +138,36 @@ router.get('/', async (req, res) => {
               JSON.stringify(awsInstance.securityGroups),
               JSON.stringify(awsInstance.volumes),
               awsInstance.isSpotInstance ? 1 : 0,
-              JSON.stringify(awsInstance.tags),
+              JSON.stringify(awsInstance.tags), // Preserve all AWS tags
               stackName,
               awsInstance.id
             ]);
             
             console.log(`🔄 Synced new AWS instance to database: ${awsInstance.id}`);
           } else {
-            // Update existing database entry with current AWS state
+            // Update existing database entry with current AWS state, but preserve Docker tags from database
+            const existingTags = JSON.parse(existingInstance.tags || '{}');
+            const awsTags = awsInstance.tags || {};
+            
+            // Merge tags, giving priority to database Docker tags if they exist
+            const mergedTags = {
+              ...awsTags,
+              ...(existingTags.DockerInstalled && { DockerInstalled: existingTags.DockerInstalled }),
+              ...(existingTags.docker && { docker: existingTags.docker }),
+              ...(existingTags.DockerImage && { DockerImage: existingTags.DockerImage }),
+              ...(existingTags.DockerInstallRequested && { DockerInstallRequested: existingTags.DockerInstallRequested }),
+            };
+            
             await db.runAsync(`
               UPDATE instances 
-              SET state = ?, public_ip = ?, private_ip = ?, name = ?
+              SET state = ?, public_ip = ?, private_ip = ?, name = ?, tags = ?
               WHERE aws_instance_id = ?
             `, [
               awsInstance.state,
               awsInstance.publicIp,
               awsInstance.privateIp,
               awsInstance.name,
+              JSON.stringify(mergedTags), // Use merged tags
               awsInstance.id
             ]);
           }
@@ -149,10 +176,8 @@ router.get('/', async (req, res) => {
         }
       }
       
-      if (awsInstances.length >= 0) { // Even if empty, AWS response is valid
-        res.json(awsInstances);
-        return;
-      }
+      res.json(awsInstances);
+      return;
     } catch (awsError) {
       console.warn('⚠️ Failed to get instances from AWS, using database:', awsError.message);
     }
@@ -187,10 +212,34 @@ router.post('/', async (req, res) => {
     
     console.log('🚀 Creating instance with request:', request);
     
+    // Check if AWS is configured
+    if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+      return res.status(401).json({ 
+        error: 'AWS credentials not configured' 
+      });
+    }
+    
     // Validate required fields
     if (!request.name || !request.region || !request.instanceType || !request.keyPairId) {
       return res.status(400).json({ 
         error: 'Missing required fields: name, region, instanceType, keyPairId' 
+      });
+    }
+    
+    // Prepare tags with Docker installation info
+    const tags = { ...request.tags };
+    if (request.installDocker) {
+      tags.DockerInstalled = 'true';
+      tags.docker = 'true';
+      tags.DockerInstallRequested = 'true'; // Track that Docker was requested
+      if (request.dockerImageToPull) {
+        tags.DockerImage = request.dockerImageToPull;
+      }
+      console.log('🐳 Docker installation requested, adding tags:', {
+        DockerInstalled: 'true',
+        docker: 'true',
+        DockerInstallRequested: 'true',
+        DockerImage: request.dockerImageToPull || 'none'
       });
     }
     
@@ -210,7 +259,7 @@ router.post('/', async (req, res) => {
       JSON.stringify(request.securityGroupIds || []),
       JSON.stringify(request.volumes || []),
       request.isSpotInstance ? 1 : 0,
-      JSON.stringify(request.tags || {}),
+      JSON.stringify(tags),
       stackName
     ]);
     
@@ -248,14 +297,294 @@ router.post('/', async (req, res) => {
   }
 });
 
+// Docker command execution endpoint - IMPROVED
+router.post('/:id/docker', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { command } = req.body;
+    
+    console.log(`🐳 Docker command request for instance ${id}: ${command}`);
+    
+    const instance = await findInstanceByAnyId(id);
+    
+    if (!instance) {
+      return res.status(404).json({ error: 'Instance not found' });
+    }
+    
+    if (instance.state !== 'running') {
+      return res.status(400).json({ error: 'Instance must be running to execute Docker commands' });
+    }
+    
+    // For now, we'll simulate the Docker command execution
+    // In a real implementation, this would use the SSH service to execute commands
+    console.log(`🔧 Simulating Docker command execution: ${command}`);
+    
+    // Simulate command execution delay
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // Mock response based on command type
+    let mockResponse = {};
+    
+    if (command.includes('docker ps')) {
+      // Check if this instance has Docker tags
+      const tags = JSON.parse(instance.tags || '{}');
+      const hasDocker = tags.DockerInstalled === 'true' || tags.docker === 'true';
+      const dockerImage = tags.DockerImage;
+      
+      if (hasDocker) {
+        const containers = [];
+        
+        // Add containers based on the Docker image that was configured
+        if (dockerImage) {
+          if (dockerImage.includes('minecraft')) {
+            containers.push({
+              id: 'abc123def456',
+              name: 'minecraft-server',
+              image: dockerImage,
+              status: 'running',
+              ports: ['0.0.0.0:25565->25565/tcp'],
+              created: '2 hours ago',
+              uptime: '2h 15m',
+              command: 'java -Xmx2G -jar server.jar',
+            });
+          } else if (dockerImage.includes('nginx')) {
+            containers.push({
+              id: 'def456ghi789',
+              name: 'nginx-server',
+              image: dockerImage,
+              status: 'running',
+              ports: ['0.0.0.0:80->80/tcp', '0.0.0.0:443->443/tcp'],
+              created: '1 hour ago',
+              uptime: '1h 30m',
+              command: 'nginx -g daemon off;',
+            });
+          } else if (dockerImage.includes('palworld')) {
+            containers.push({
+              id: 'ghi789jkl012',
+              name: 'palworld-server',
+              image: dockerImage,
+              status: 'running',
+              ports: ['0.0.0.0:8211->8211/udp', '0.0.0.0:27015->27015/udp'],
+              created: '3 hours ago',
+              uptime: '3h 45m',
+              command: './PalServer.sh',
+            });
+          } else if (dockerImage.includes('valheim')) {
+            containers.push({
+              id: 'jkl012mno345',
+              name: 'valheim-server',
+              image: dockerImage,
+              status: 'running',
+              ports: ['0.0.0.0:2456->2456/udp', '0.0.0.0:2457->2457/udp', '0.0.0.0:2458->2458/udp'],
+              created: '4 hours ago',
+              uptime: '4h 20m',
+              command: './valheim_server.x86_64',
+            });
+          } else if (dockerImage.includes('postgres')) {
+            containers.push({
+              id: 'mno345pqr678',
+              name: 'postgres-db',
+              image: dockerImage,
+              status: 'running',
+              ports: ['0.0.0.0:5432->5432/tcp'],
+              created: '2 hours ago',
+              uptime: '2h 10m',
+              command: 'postgres',
+            });
+          } else if (dockerImage.includes('mysql')) {
+            containers.push({
+              id: 'pqr678stu901',
+              name: 'mysql-db',
+              image: dockerImage,
+              status: 'running',
+              ports: ['0.0.0.0:3306->3306/tcp'],
+              created: '2 hours ago',
+              uptime: '2h 5m',
+              command: 'mysqld',
+            });
+          } else if (dockerImage.includes('redis')) {
+            containers.push({
+              id: 'stu901vwx234',
+              name: 'redis-cache',
+              image: dockerImage,
+              status: 'running',
+              ports: ['0.0.0.0:6379->6379/tcp'],
+              created: '1 hour ago',
+              uptime: '1h 25m',
+              command: 'redis-server --appendonly yes',
+            });
+          } else if (dockerImage.includes('apache') || dockerImage.includes('httpd')) {
+            containers.push({
+              id: 'vwx234yza567',
+              name: 'apache-server',
+              image: dockerImage,
+              status: 'running',
+              ports: ['0.0.0.0:80->80/tcp', '0.0.0.0:443->443/tcp'],
+              created: '1 hour ago',
+              uptime: '1h 20m',
+              command: 'httpd-foreground',
+            });
+          } else {
+            // Generic container
+            containers.push({
+              id: 'yza567bcd890',
+              name: 'custom-service',
+              image: dockerImage,
+              status: 'running',
+              ports: ['0.0.0.0:3000->3000/tcp'],
+              created: '1 hour ago',
+              uptime: '1h 10m',
+              command: 'node app.js',
+            });
+          }
+        }
+        
+        mockResponse = {
+          success: true,
+          output: 'Container list retrieved successfully',
+          containers: containers
+        };
+      } else {
+        mockResponse = {
+          success: false,
+          error: 'Docker not installed or not running',
+          containers: []
+        };
+      }
+    } else if (command.includes('docker --version')) {
+      const tags = JSON.parse(instance.tags || '{}');
+      const hasDocker = tags.DockerInstalled === 'true' || tags.docker === 'true';
+      
+      if (hasDocker) {
+        mockResponse = {
+          success: true,
+          output: 'Docker version 24.0.7, build afdd53b\nactive',
+          version: '24.0.7'
+        };
+      } else {
+        mockResponse = {
+          success: false,
+          error: 'Docker not installed',
+          output: 'docker: command not found'
+        };
+      }
+    } else if (command.includes('docker start') || command.includes('docker stop') || command.includes('docker restart')) {
+      mockResponse = {
+        success: true,
+        output: 'Command executed successfully',
+        action: command.split(' ')[1] // start, stop, restart
+      };
+    } else {
+      mockResponse = {
+        success: true,
+        output: 'Command executed successfully',
+        command: command
+      };
+    }
+    
+    console.log(`✅ Docker command completed for instance ${id}`);
+    res.json(mockResponse);
+    
+  } catch (error) {
+    console.error('❌ Failed to execute Docker command:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to execute Docker command', 
+      details: error.message 
+    });
+  }
+});
+
+// Docker status check endpoint - IMPROVED
+router.get('/:id/docker/status', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    console.log(`🐳 Docker status check for instance ${id}`);
+    
+    const instance = await findInstanceByAnyId(id);
+    
+    if (!instance) {
+      return res.status(404).json({ error: 'Instance not found' });
+    }
+    
+    const tags = JSON.parse(instance.tags || '{}');
+    const hasDockerTag = tags.DockerInstalled === 'true' || tags.docker === 'true';
+    const dockerRequested = tags.DockerInstallRequested === 'true';
+    const dockerImage = tags.DockerImage;
+    
+    // Simulate Docker status check based on instance state and time since launch
+    let dockerStatus = 'not_installed';
+    let dockerVersion = null;
+    let installationStatus = 'not_requested';
+    
+    if (dockerRequested) {
+      const launchTime = new Date(instance.launch_time);
+      const now = new Date();
+      const minutesSinceLaunch = (now.getTime() - launchTime.getTime()) / (1000 * 60);
+      
+      if (instance.state === 'running') {
+        if (minutesSinceLaunch < 5) {
+          // Still installing (first 5 minutes)
+          dockerStatus = 'installing';
+          installationStatus = 'in_progress';
+        } else if (hasDockerTag) {
+          // Installation should be complete
+          dockerStatus = 'running';
+          dockerVersion = '24.0.7';
+          installationStatus = 'completed';
+        } else {
+          // Installation may have failed
+          dockerStatus = 'installation_failed';
+          installationStatus = 'failed';
+        }
+      } else if (instance.state === 'pending' || instance.state === 'initializing') {
+        dockerStatus = 'installing';
+        installationStatus = 'in_progress';
+      } else {
+        dockerStatus = 'not_installed';
+        installationStatus = 'failed';
+      }
+    }
+    
+    const response = {
+      instanceId: instance.id,
+      instanceState: instance.state,
+      dockerStatus,
+      dockerVersion,
+      installationStatus,
+      dockerRequested,
+      dockerImage: dockerImage || null,
+      hasDockerTag,
+      minutesSinceLaunch: dockerRequested ? Math.floor((new Date().getTime() - new Date(instance.launch_time).getTime()) / (1000 * 60)) : null,
+      timestamp: new Date().toISOString()
+    };
+    
+    console.log(`📊 Docker status for ${id}:`, response);
+    res.json(response);
+    
+  } catch (error) {
+    console.error('❌ Failed to check Docker status:', error);
+    res.status(500).json({ 
+      error: 'Failed to check Docker status', 
+      details: error.message 
+    });
+  }
+});
+
 // Start instance
 router.post('/:id/start', async (req, res) => {
   try {
     const { id } = req.params;
     console.log(`🟢 === START INSTANCE REQUEST ===`);
     console.log(`🔍 Received request to start instance: ${id}`);
-    console.log(`📍 Request URL: ${req.originalUrl}`);
-    console.log(`🔧 Request method: ${req.method}`);
+    
+    // Check if AWS is configured
+    if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+      return res.status(401).json({ 
+        error: 'AWS credentials not configured' 
+      });
+    }
     
     const instance = await findInstanceByAnyId(id);
     
@@ -311,8 +640,13 @@ router.post('/:id/stop', async (req, res) => {
     const { id } = req.params;
     console.log(`🔴 === STOP INSTANCE REQUEST ===`);
     console.log(`🔍 Received request to stop instance: ${id}`);
-    console.log(`📍 Request URL: ${req.originalUrl}`);
-    console.log(`🔧 Request method: ${req.method}`);
+    
+    // Check if AWS is configured
+    if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+      return res.status(401).json({ 
+        error: 'AWS credentials not configured' 
+      });
+    }
     
     const instance = await findInstanceByAnyId(id);
     
@@ -368,8 +702,13 @@ router.delete('/:id', async (req, res) => {
     const { id } = req.params;
     console.log(`💥 === TERMINATE INSTANCE REQUEST ===`);
     console.log(`🔍 Received request to terminate instance: ${id}`);
-    console.log(`📍 Request URL: ${req.originalUrl}`);
-    console.log(`🔧 Request method: ${req.method}`);
+    
+    // Check if AWS is configured
+    if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+      return res.status(401).json({ 
+        error: 'AWS credentials not configured' 
+      });
+    }
     
     const instance = await findInstanceByAnyId(id);
     

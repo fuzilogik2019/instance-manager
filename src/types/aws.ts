@@ -80,6 +80,7 @@ export interface EC2Instance {
   privateIp: string;
   keyPairName: string;
   securityGroups: string[];
+  securityGroupNames?: string[];
   volumes: EBSVolume[];
   isSpotInstance: boolean;
   launchTime: Date;

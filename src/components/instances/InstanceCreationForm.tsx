@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
-import { Plus, HardDrive, AlertCircle, CheckCircle, Link, Monitor, Server, Smartphone, Star, Package, Container } from 'lucide-react';
+import { Plus, HardDrive, AlertCircle, CheckCircle, Link, Monitor, Server, Smartphone, Star, Package, Container, AlertTriangle } from 'lucide-react';
 import { AWSRegion, InstanceType, SecurityGroup, SSHKeyPair, EBSVolume, AMI } from '../../types/aws';
 import { getRegions, getInstanceTypes, getSecurityGroups, getKeyPairs, getVolumes, getAMIs, createInstance } from '../../services/api';
 import LoadingSpinner from '../ui/LoadingSpinner';
@@ -37,12 +37,10 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
   const [instanceTypes, setInstanceTypes] = useState<InstanceType[]>([]);
   const [securityGroups, setSecurityGroups] = useState<SecurityGroup[]>([]);
   const [keyPairs, setKeyPairs] = useState<SSHKeyPair[]>([]);
-  const [availableVolumes, setAvailableVolumes] = useState<EBSVolume[]>([]);
-  const [volumes, setVolumes] = useState<Omit<EBSVolume, 'id'>[]>([]);
-  const [selectedExistingVolumes, setSelectedExistingVolumes] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [amiFilter, setAmiFilter] = useState<string>('all');
+  const [showNonUbuntuWarning, setShowNonUbuntuWarning] = useState(false);
 
   const { register, handleSubmit, watch, setValue, formState: { errors } } = useForm<FormData>({
     defaultValues: {
@@ -71,7 +69,6 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
       loadAMIs(selectedRegion);
       loadInstanceTypes(selectedRegion);
       loadSecurityGroups(selectedRegion);
-      loadAvailableVolumes(selectedRegion);
     }
   }, [selectedRegion]);
 
@@ -86,9 +83,34 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
       if (ubuntu2204) {
         setValue('amiId', ubuntu2204.id);
         console.log(`🎯 Auto-selected Ubuntu 22.04 LTS: ${ubuntu2204.name}`);
+        setShowNonUbuntuWarning(false);
+      } else {
+        // If no Ubuntu 22.04, try Ubuntu 20.04
+        const ubuntu2004 = amis.find(ami => 
+          ami.osType === 'ubuntu' && ami.osVersion === '20.04'
+        );
+        
+        if (ubuntu2004) {
+          setValue('amiId', ubuntu2004.id);
+          console.log(`🔄 Auto-selected Ubuntu 20.04 LTS as fallback: ${ubuntu2004.name}`);
+          setShowNonUbuntuWarning(false);
+        }
       }
     }
   }, [amis, selectedAMI, setValue]);
+
+  // Check for non-Ubuntu AMI selection and show warning
+  useEffect(() => {
+    if (selectedAMI && amis.length > 0) {
+      const selectedAMIDetails = amis.find(ami => ami.id === selectedAMI);
+      if (selectedAMIDetails && installDocker) {
+        const isUbuntu22 = selectedAMIDetails.osType === 'ubuntu' && selectedAMIDetails.osVersion === '22.04';
+        setShowNonUbuntuWarning(!isUbuntu22);
+      } else {
+        setShowNonUbuntuWarning(false);
+      }
+    }
+  }, [selectedAMI, amis, installDocker]);
 
   const loadRegions = async () => {
     try {
@@ -108,7 +130,9 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
       
       // Log Ubuntu 22.04 availability
       const ubuntu2204Count = data.filter(ami => ami.osType === 'ubuntu' && ami.osVersion === '22.04').length;
+      const ubuntu2004Count = data.filter(ami => ami.osType === 'ubuntu' && ami.osVersion === '20.04').length;
       console.log(`Found ${ubuntu2204Count} Ubuntu 22.04 LTS AMIs`);
+      console.log(`Found ${ubuntu2004Count} Ubuntu 20.04 LTS AMIs`);
     } catch (error) {
       console.error('Failed to load AMIs:', error);
     } finally {
@@ -144,45 +168,6 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
     } catch (error) {
       console.error('Failed to load key pairs:', error);
     }
-  };
-
-  const loadAvailableVolumes = async (region: string) => {
-    try {
-      const data = await getVolumes(region);
-      // Filter only available volumes
-      const available = data.filter(volume => volume.state === 'available');
-      setAvailableVolumes(available);
-    } catch (error) {
-      console.error('Failed to load volumes:', error);
-    }
-  };
-
-  const addVolume = () => {
-    setVolumes([...volumes, {
-      type: 'gp3',
-      size: 20,
-      encrypted: true,
-      deleteOnTermination: false, // Additional volumes should not delete on termination by default
-    }]);
-  };
-
-  const removeVolume = (index: number) => {
-    setVolumes(volumes.filter((_, i) => i !== index));
-  };
-
-  const updateVolume = (index: number, field: string, value: any) => {
-    const updatedVolumes = volumes.map((volume, i) => 
-      i === index ? { ...volume, [field]: value } : volume
-    );
-    setVolumes(updatedVolumes);
-  };
-
-  const toggleExistingVolume = (volumeId: string) => {
-    setSelectedExistingVolumes(prev => 
-      prev.includes(volumeId) 
-        ? prev.filter(id => id !== volumeId)
-        : [...prev, volumeId]
-    );
   };
 
   const getOSIcon = (osType: string) => {
@@ -225,7 +210,7 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
     try {
       setCreating(true);
       
-      // Create the root volume configuration
+      // Create ONLY the root volume configuration - NO additional volumes
       const rootVolume: Omit<EBSVolume, 'id'> = {
         type: data.rootVolumeType,
         size: data.rootVolumeSize,
@@ -233,14 +218,14 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
         deleteOnTermination: true, // Root volume should delete on termination
       };
 
-      // Combine root volume with additional volumes
-      const allVolumes = [rootVolume, ...volumes];
+      // ONLY send the root volume - this prevents additional volumes from being created
+      const volumes = [rootVolume];
 
       await createInstance({
         ...data,
         securityGroupIds: data.securityGroupIds || [],
-        volumes: allVolumes,
-        existingVolumeIds: selectedExistingVolumes,
+        volumes: volumes, // Only root volume
+        existingVolumeIds: [], // No existing volumes to attach
         tags: { Name: data.name },
         installDocker: data.installDocker,
         dockerImageToPull: data.dockerImageToPull || undefined,
@@ -500,46 +485,6 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
             </Card>
           )}
 
-          <Card title="Security & Access">
-            <div className="space-y-4">
-              <Select
-                label="SSH Key Pair"
-                {...register('keyPairId', { required: 'Key pair is required' })}
-                error={errors.keyPairId?.message}
-                options={keyPairs.map(kp => ({ 
-                  value: kp.name, 
-                  label: `${kp.name}${kp.privateKey ? ' (SSH Terminal Ready)' : ' (Public Key Only)'}` 
-                }))}
-                placeholder="Select key pair"
-              />
-
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                <h4 className="font-medium text-blue-900 mb-2">💡 SSH Terminal Access</h4>
-                <p className="text-sm text-blue-800">
-                  To use the built-in SSH terminal, make sure your key pair includes the private key (.pem file content). 
-                  Key pairs marked as "SSH Terminal Ready" can be used for browser-based SSH access.
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Security Groups</label>
-                <div className="space-y-2 max-h-32 overflow-y-auto">
-                  {securityGroups.map(sg => (
-                    <label key={sg.id} className="flex items-center">
-                      <input
-                        type="checkbox"
-                        value={sg.id}
-                        {...register('securityGroupIds')}
-                        className="rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50"
-                      />
-                      <span className="ml-2 text-sm text-gray-700">{sg.name} - {sg.description}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </Card>
-
           <Card title="🐳 Docker & Container Setup">
             <div className="space-y-6">
               {/* Docker Installation Option */}
@@ -586,6 +531,35 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
                   </div>
                 </div>
               </div>
+
+              {/* Non-Ubuntu Warning */}
+              {showNonUbuntuWarning && (
+                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                  <div className="flex items-start space-x-3">
+                    <AlertTriangle className="w-5 h-5 text-yellow-600 mt-0.5" />
+                    <div>
+                      <h4 className="font-medium text-yellow-900">⚠️ Non-Ubuntu AMI Selected</h4>
+                      <p className="text-sm text-yellow-800 mt-1 mb-3">
+                        You've selected a non-Ubuntu 22.04 AMI with Docker installation enabled. While this may work, 
+                        we recommend Ubuntu 22.04 LTS for the best Docker experience.
+                      </p>
+                      <div className="bg-yellow-100 border border-yellow-300 rounded p-3">
+                        <h5 className="font-medium text-yellow-900 mb-2">⚠️ Important Considerations:</h5>
+                        <ul className="text-sm text-yellow-800 space-y-1">
+                          <li>• Docker installation script is optimized for Ubuntu</li>
+                          <li>• Other distributions may require manual verification</li>
+                          <li>• Package managers and commands may differ</li>
+                          <li>• You may need to manually install Docker after launch</li>
+                          <li>• SSH terminal access may require different usernames</li>
+                        </ul>
+                      </div>
+                      <p className="text-sm text-yellow-800 mt-3 font-medium">
+                        💡 <strong>Recommendation:</strong> Switch to Ubuntu 22.04 LTS for guaranteed Docker compatibility and optimal performance.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Docker Image Configuration */}
               {installDocker && (
@@ -636,6 +610,46 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
                   </div>
                 </div>
               )}
+            </div>
+          </Card>
+
+          <Card title="Security & Access">
+            <div className="space-y-4">
+              <Select
+                label="SSH Key Pair"
+                {...register('keyPairId', { required: 'Key pair is required' })}
+                error={errors.keyPairId?.message}
+                options={keyPairs.map(kp => ({ 
+                  value: kp.name, 
+                  label: `${kp.name}${kp.privateKey ? ' (SSH Terminal Ready)' : ' (Public Key Only)'}` 
+                }))}
+                placeholder="Select key pair"
+              />
+
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <h4 className="font-medium text-blue-900 mb-2">💡 SSH Terminal Access</h4>
+                <p className="text-sm text-blue-800">
+                  To use the built-in SSH terminal, make sure your key pair includes the private key (.pem file content). 
+                  Key pairs marked as "SSH Terminal Ready" can be used for browser-based SSH access.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Security Groups</label>
+                <div className="space-y-2 max-h-32 overflow-y-auto">
+                  {securityGroups.map(sg => (
+                    <label key={sg.id} className="flex items-center">
+                      <input
+                        type="checkbox"
+                        value={sg.id}
+                        {...register('securityGroupIds')}
+                        className="rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50"
+                      />
+                      <span className="ml-2 text-sm text-gray-700">{sg.name} - {sg.description}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
             </div>
           </Card>
 
@@ -700,110 +714,19 @@ export default function InstanceCreationForm({ onInstanceCreated, onClose }: Ins
                 </div>
               </div>
 
-              {/* Additional Volumes Section */}
-              <div>
-                <div className="flex items-center justify-between mb-4">
-                  <h4 className="font-medium text-gray-900">Additional Storage Volumes</h4>
-                  <Button type="button" variant="secondary" size="sm" onClick={addVolume}>
-                    <Plus className="w-4 h-4 mr-1" />
-                    Add Volume
-                  </Button>
+              {/* Information about simplified storage */}
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <div className="flex items-start space-x-3">
+                  <HardDrive className="w-5 h-5 text-blue-600 mt-0.5" />
+                  <div>
+                    <h4 className="font-medium text-blue-900">Simplified Storage Configuration</h4>
+                    <p className="text-sm text-blue-800 mt-1">
+                      This instance will be created with only the root volume for simplicity. 
+                      You can attach additional volumes later from the Volumes section if needed.
+                    </p>
+                  </div>
                 </div>
-
-                {volumes.map((volume, index) => (
-                  <div key={index} className="border border-gray-200 rounded-lg p-4 mb-4">
-                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                      <Select
-                        label="Volume Type"
-                        value={volume.type}
-                        onChange={(e) => updateVolume(index, 'type', e.target.value)}
-                        options={[
-                          { value: 'gp3', label: 'gp3 (General Purpose SSD)' },
-                          { value: 'gp2', label: 'gp2 (General Purpose SSD)' },
-                          { value: 'io1', label: 'io1 (Provisioned IOPS SSD)' },
-                          { value: 'io2', label: 'io2 (Provisioned IOPS SSD)' },
-                          { value: 'st1', label: 'st1 (Throughput Optimized HDD)' },
-                          { value: 'sc1', label: 'sc1 (Cold HDD)' },
-                        ]}
-                      />
-
-                      <Input
-                        label="Size (GB)"
-                        type="number"
-                        value={volume.size}
-                        onChange={(e) => updateVolume(index, 'size', parseInt(e.target.value))}
-                        min="1"
-                        max="16384"
-                      />
-
-                      <div className="flex items-center space-x-4">
-                        <label className="flex items-center">
-                          <input
-                            type="checkbox"
-                            checked={volume.encrypted}
-                            onChange={(e) => updateVolume(index, 'encrypted', e.target.checked)}
-                            className="rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50"
-                          />
-                          <span className="ml-2 text-sm text-gray-700">Encrypted</span>
-                        </label>
-                      </div>
-
-                      <div className="flex items-center justify-end">
-                        <Button
-                          type="button"
-                          variant="danger"
-                          size="sm"
-                          onClick={() => removeVolume(index)}
-                        >
-                          Remove
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-
-                {volumes.length === 0 && (
-                  <div className="text-center py-6 text-gray-500 border-2 border-dashed border-gray-300 rounded-lg">
-                    <HardDrive className="w-8 h-8 mx-auto mb-2 text-gray-400" />
-                    <p>No additional volumes configured</p>
-                    <p className="text-sm">Only the root volume will be created</p>
-                  </div>
-                )}
               </div>
-
-              {/* Existing Volumes Section */}
-              {availableVolumes.length > 0 && (
-                <div>
-                  <h4 className="font-medium text-gray-900 mb-4">Attach Existing Volumes</h4>
-                  <div className="space-y-2 max-h-48 overflow-y-auto border border-gray-200 rounded-lg p-4">
-                    {availableVolumes.map(volume => (
-                      <label key={volume.id} className="flex items-center justify-between p-3 hover:bg-gray-50 rounded-lg">
-                        <div className="flex items-center">
-                          <input
-                            type="checkbox"
-                            checked={selectedExistingVolumes.includes(volume.id)}
-                            onChange={() => toggleExistingVolume(volume.id)}
-                            className="rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200 focus:ring-opacity-50"
-                          />
-                          <div className="ml-3">
-                            <div className="text-sm font-medium text-gray-900">{volume.id}</div>
-                            <div className="text-sm text-gray-500">
-                              {volume.type.toUpperCase()} - {volume.size} GB
-                              {volume.encrypted && <span className="ml-2 text-green-600">Encrypted</span>}
-                            </div>
-                          </div>
-                        </div>
-                        <Link className="w-4 h-4 text-gray-400" />
-                      </label>
-                    ))}
-                  </div>
-                  {selectedExistingVolumes.length > 0 && (
-                    <div className="mt-2 text-sm text-blue-600">
-                      {selectedExistingVolumes.length} volume(s) selected for attachment
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
           </Card>
 

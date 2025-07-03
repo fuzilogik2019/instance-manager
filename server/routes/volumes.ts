@@ -14,6 +14,23 @@ router.get('/', async (req, res) => {
       return res.status(400).json({ error: 'Region parameter is required' });
     }
 
+    // Check if AWS is configured
+    if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+      console.log('⚠️ AWS credentials not configured, using database only');
+      const volumes = await db.allAsync(
+        'SELECT * FROM volumes WHERE region = ? ORDER BY created_at DESC',
+        [region]
+      );
+      
+      const parsedVolumes = volumes.map((volume: any) => ({
+        ...volume,
+        encrypted: Boolean(volume.encrypted),
+        createdAt: new Date(volume.created_at),
+      }));
+      
+      return res.json(parsedVolumes);
+    }
+
     // Try to get from AWS first
     try {
       const awsService = new AWSService(region as string);
@@ -53,6 +70,13 @@ router.post('/', async (req, res) => {
     
     if (!type || !size || !region) {
       return res.status(400).json({ error: 'Type, size, and region are required' });
+    }
+
+    // Check if AWS is configured
+    if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+      return res.status(401).json({ 
+        error: 'AWS credentials not configured' 
+      });
     }
     
     const id = uuidv4();
@@ -108,6 +132,13 @@ router.post('/:id/attach', async (req, res) => {
     if (!instanceId || !device) {
       return res.status(400).json({ error: 'Instance ID and device are required' });
     }
+
+    // Check if AWS is configured
+    if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+      return res.status(401).json({ 
+        error: 'AWS credentials not configured' 
+      });
+    }
     
     // Try to attach in AWS first
     try {
@@ -143,6 +174,13 @@ router.post('/:id/detach', async (req, res) => {
     const { id } = req.params;
     
     console.log(`Detaching volume ${id}`);
+
+    // Check if AWS is configured
+    if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+      return res.status(401).json({ 
+        error: 'AWS credentials not configured' 
+      });
+    }
     
     // Try to detach in AWS first
     try {
@@ -178,6 +216,13 @@ router.delete('/:id', async (req, res) => {
     const { id } = req.params;
     
     console.log(`Deleting volume ${id}`);
+
+    // Check if AWS is configured
+    if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+      return res.status(401).json({ 
+        error: 'AWS credentials not configured' 
+      });
+    }
     
     // Check if volume is attached before deleting
     try {

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Server, Play, Square, Trash2, RefreshCw, Plus, ExternalLink, AlertTriangle, Terminal, Monitor, Smartphone, Clock, CheckCircle, XCircle, Container, Activity } from 'lucide-react';
+import { Server, Play, Square, Trash2, RefreshCw, Plus, ExternalLink, AlertTriangle, Terminal, Monitor, Smartphone, Clock, CheckCircle, XCircle, Container, Activity, Loader, Shield } from 'lucide-react';
 import { EC2Instance } from '../../types/aws';
 import { getInstances, startInstance, stopInstance, terminateInstance } from '../../services/api';
 import Button from '../ui/Button';
@@ -15,10 +15,41 @@ export default function InstancesList() {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [showDockerServices, setShowDockerServices] = useState<string | null>(null);
+  const [dockerStatuses, setDockerStatuses] = useState<Record<string, any>>({});
 
   useEffect(() => {
     loadInstances();
   }, []);
+
+  // Check Docker status for instances that have Docker tags - IMPROVED
+  useEffect(() => {
+    const checkDockerStatuses = async () => {
+      const dockerInstances = instances.filter(instance => hasDockerInstalled(instance));
+      
+      for (const instance of dockerInstances) {
+        try {
+          const response = await fetch(`http://localhost:3001/api/instances/${instance.id}/docker/status`);
+          if (response.ok) {
+            const status = await response.json();
+            setDockerStatuses(prev => ({
+              ...prev,
+              [instance.id]: status
+            }));
+            console.log(`🐳 Docker status for ${instance.id}:`, status);
+          }
+        } catch (error) {
+          console.warn(`Failed to check Docker status for ${instance.id}:`, error);
+        }
+      }
+    };
+
+    if (instances.length > 0) {
+      checkDockerStatuses();
+      // Check Docker status every 30 seconds for running instances
+      const interval = setInterval(checkDockerStatuses, 30000);
+      return () => clearInterval(interval);
+    }
+  }, [instances]);
 
   const loadInstances = async () => {
     try {
@@ -203,7 +234,73 @@ export default function InstancesList() {
     // Check if instance was created with Docker installation
     return instance.tags?.DockerInstalled === 'true' || 
            instance.tags?.docker === 'true' ||
-           instance.name.toLowerCase().includes('docker');
+           instance.tags?.DockerInstallRequested === 'true';
+  };
+
+  const getDockerStatus = (instance: EC2Instance) => {
+    const status = dockerStatuses[instance.id];
+    if (!status) return null;
+
+    return {
+      status: status.dockerStatus,
+      version: status.dockerVersion,
+      installationStatus: status.installationStatus,
+      dockerImage: status.dockerImage,
+      minutesSinceLaunch: status.minutesSinceLaunch
+    };
+  };
+
+  const getDockerBadge = (instance: EC2Instance) => {
+    if (!hasDockerInstalled(instance)) return null;
+
+    const dockerStatus = getDockerStatus(instance);
+    
+    if (!dockerStatus) {
+      return (
+        <Badge variant="secondary" size="sm">
+          <Container className="w-3 h-3 mr-1" />
+          Docker
+        </Badge>
+      );
+    }
+
+    switch (dockerStatus.status) {
+      case 'running':
+        return (
+          <Badge variant="success" size="sm">
+            <Container className="w-3 h-3 mr-1" />
+            Docker Ready
+          </Badge>
+        );
+      case 'installing':
+        return (
+          <Badge variant="warning" size="sm">
+            <Loader className="w-3 h-3 mr-1 animate-spin" />
+            Installing Docker
+          </Badge>
+        );
+      case 'installation_failed':
+        return (
+          <Badge variant="danger" size="sm">
+            <AlertTriangle className="w-3 h-3 mr-1" />
+            Docker Failed
+          </Badge>
+        );
+      case 'not_installed':
+        return (
+          <Badge variant="secondary" size="sm">
+            <Container className="w-3 h-3 mr-1" />
+            Docker Requested
+          </Badge>
+        );
+      default:
+        return (
+          <Badge variant="secondary" size="sm">
+            <Container className="w-3 h-3 mr-1" />
+            Docker
+          </Badge>
+        );
+    }
   };
 
   const getStatusChecksBadge = (instance: EC2Instance) => {
@@ -239,21 +336,30 @@ export default function InstancesList() {
 
   const getInstanceActions = (instance: EC2Instance) => {
     const actions = [];
+    const dockerStatus = getDockerStatus(instance);
 
-    // Docker Services button - only for running instances with Docker
+    // Docker Services button - IMPROVED LOGIC
     if (instance.state === 'running' && hasDockerInstalled(instance)) {
-      actions.push(
-        <Button
-          key="docker"
-          size="sm"
-          variant="primary"
-          onClick={() => handleViewDockerServices(instance.id)}
-          title="View Docker Services"
-          className="bg-blue-600 hover:bg-blue-700 focus:ring-blue-500"
-        >
-          <Container className="w-4 h-4" />
-        </Button>
-      );
+      // Show Docker button if:
+      // 1. Docker status is 'running' (confirmed working)
+      // 2. OR if more than 5 minutes have passed since launch (likely installed)
+      const shouldShowDockerButton = dockerStatus?.status === 'running' || 
+        (dockerStatus?.minutesSinceLaunch && dockerStatus.minutesSinceLaunch >= 5);
+      
+      if (shouldShowDockerButton) {
+        actions.push(
+          <Button
+            key="docker"
+            size="sm"
+            variant="primary"
+            onClick={() => handleViewDockerServices(instance.id)}
+            title="View Docker Services"
+            className="bg-blue-600 hover:bg-blue-700 focus:ring-blue-500"
+          >
+            <Container className="w-4 h-4" />
+          </Button>
+        );
+      }
     }
 
     // SSH Terminal button - only for running Linux instances with SSH key and ready status
@@ -377,186 +483,285 @@ export default function InstancesList() {
         </Card>
       ) : (
         <div className="grid gap-6">
-          {instances.map((instance) => (
-            <Card key={instance.id}>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-4">
-                  <div className="flex-shrink-0">
-                    <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
-                      {getOSIcon(instance.ami)}
+          {instances.map((instance) => {
+            const dockerStatus = getDockerStatus(instance);
+            
+            return (
+              <Card key={instance.id}>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-4">
+                    <div className="flex-shrink-0">
+                      <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
+                        {getOSIcon(instance.ami)}
+                      </div>
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-900">{instance.name}</h3>
+                      <div className="flex items-center space-x-4 text-sm text-gray-600 mt-1">
+                        <span>{instance.instanceType}</span>
+                        <span>{instance.region}</span>
+                        <span>{instance.availabilityZone}</span>
+                        {instance.ami && (
+                          <Badge variant="secondary" size="sm" className={getOSBadgeColor(instance.ami.osType)}>
+                            {instance.ami.osType.replace('-', ' ').toUpperCase()} {instance.ami.osVersion}
+                          </Badge>
+                        )}
+                        {instance.isSpotInstance && (
+                          <Badge variant="warning" size="sm">Spot</Badge>
+                        )}
+                        {getDockerBadge(instance)}
+                        {getStatusChecksBadge(instance)}
+                        {canUseSSHTerminal(instance) && (
+                          <Badge variant="success" size="sm">
+                            <Terminal className="w-3 h-3 mr-1" />
+                            SSH Ready
+                          </Badge>
+                        )}
+                        {instance.ami?.platform === 'windows' && instance.state === 'running' && (
+                          <Badge variant="primary" size="sm">
+                            <Monitor className="w-3 h-3 mr-1" />
+                            RDP Ready
+                          </Badge>
+                        )}
+                      </div>
                     </div>
                   </div>
-                  <div>
-                    <h3 className="text-lg font-semibold text-gray-900">{instance.name}</h3>
-                    <div className="flex items-center space-x-4 text-sm text-gray-600 mt-1">
-                      <span>{instance.instanceType}</span>
-                      <span>{instance.region}</span>
-                      <span>{instance.availabilityZone}</span>
-                      {instance.ami && (
-                        <Badge variant="secondary" size="sm" className={getOSBadgeColor(instance.ami.osType)}>
-                          {instance.ami.osType.replace('-', ' ').toUpperCase()} {instance.ami.osVersion}
-                        </Badge>
-                      )}
-                      {instance.isSpotInstance && (
-                        <Badge variant="warning" size="sm">Spot</Badge>
-                      )}
-                      {hasDockerInstalled(instance) && (
-                        <Badge variant="primary" size="sm">
-                          <Container className="w-3 h-3 mr-1" />
-                          Docker
-                        </Badge>
-                      )}
-                      {getStatusChecksBadge(instance)}
-                      {canUseSSHTerminal(instance) && (
-                        <Badge variant="success" size="sm">
-                          <Terminal className="w-3 h-3 mr-1" />
-                          SSH Ready
-                        </Badge>
-                      )}
-                      {instance.ami?.platform === 'windows' && instance.state === 'running' && (
-                        <Badge variant="primary" size="sm">
-                          <Monitor className="w-3 h-3 mr-1" />
-                          RDP Ready
-                        </Badge>
-                      )}
-                    </div>
-                  </div>
-                </div>
-                <div className="flex items-center space-x-3">
-                  <div className="flex items-center space-x-2">
-                    {getStateIcon(instance.state)}
-                    <Badge variant={getStateColor(instance.state)}>
-                      {instance.state === 'initializing' ? 'Initializing' : instance.state}
-                    </Badge>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    {getInstanceActions(instance)}
-                  </div>
-                </div>
-              </div>
-
-              {/* Docker Services Info */}
-              {hasDockerInstalled(instance) && instance.state === 'running' && (
-                <div className="mt-4 bg-blue-50 border border-blue-200 rounded-lg p-3">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-3">
                     <div className="flex items-center space-x-2">
-                      <Container className="w-5 h-5 text-blue-600" />
+                      {getStateIcon(instance.state)}
+                      <Badge variant={getStateColor(instance.state)}>
+                        {instance.state === 'initializing' ? 'Initializing' : instance.state}
+                      </Badge>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      {getInstanceActions(instance)}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Docker Services Info - IMPROVED */}
+                {hasDockerInstalled(instance) && (
+                  <div className="mt-4">
+                    {dockerStatus?.status === 'running' && instance.state === 'running' && (
+                      <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center space-x-2">
+                            <Container className="w-5 h-5 text-blue-600" />
+                            <div>
+                              <h4 className="font-medium text-blue-900">🐳 Docker Services Ready</h4>
+                              <p className="text-sm text-blue-800">
+                                Docker {dockerStatus.version} is running. 
+                                {dockerStatus.dockerImage && ` Image: ${dockerStatus.dockerImage}`}
+                              </p>
+                            </div>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="primary"
+                            onClick={() => handleViewDockerServices(instance.id)}
+                            className="bg-blue-600 hover:bg-blue-700"
+                          >
+                            <Activity className="w-4 h-4 mr-1" />
+                            View Services
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+
+                    {dockerStatus?.status === 'installing' && (
+                      <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+                        <div className="flex items-center space-x-2">
+                          <Loader className="w-5 h-5 text-yellow-600 animate-spin" />
+                          <div>
+                            <h4 className="font-medium text-yellow-900">🔄 Installing Docker</h4>
+                            <p className="text-sm text-yellow-800">
+                              Docker installation is in progress. This may take a few minutes.
+                              {dockerStatus.dockerImage && ` Will deploy: ${dockerStatus.dockerImage}`}
+                              {dockerStatus.minutesSinceLaunch && ` (${dockerStatus.minutesSinceLaunch} min elapsed)`}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {dockerStatus?.status === 'installation_failed' && (
+                      <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                        <div className="flex items-center space-x-2">
+                          <AlertTriangle className="w-5 h-5 text-red-600" />
+                          <div>
+                            <h4 className="font-medium text-red-900">❌ Docker Installation Failed</h4>
+                            <p className="text-sm text-red-800">
+                              Docker installation encountered an error. Check the SSH terminal for details.
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Show Docker button for instances that should have Docker ready */}
+                    {instance.state === 'running' && hasDockerInstalled(instance) && 
+                     dockerStatus?.minutesSinceLaunch && dockerStatus.minutesSinceLaunch >= 5 && 
+                     dockerStatus.status !== 'running' && (
+                      <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center space-x-2">
+                            <Container className="w-5 h-5 text-green-600" />
+                            <div>
+                              <h4 className="font-medium text-green-900">🐳 Docker Should Be Ready</h4>
+                              <p className="text-sm text-green-800">
+                                Docker installation time has elapsed. Services should be available.
+                                {dockerStatus.dockerImage && ` Expected image: ${dockerStatus.dockerImage}`}
+                              </p>
+                            </div>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="primary"
+                            onClick={() => handleViewDockerServices(instance.id)}
+                            className="bg-green-600 hover:bg-green-700"
+                          >
+                            <Activity className="w-4 h-4 mr-1" />
+                            Check Services
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+
+                    {dockerStatus?.status === 'not_installed' && dockerStatus?.installationStatus === 'not_requested' && (
+                      <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
+                        <div className="flex items-center space-x-2">
+                          <Container className="w-5 h-5 text-gray-600" />
+                          <div>
+                            <h4 className="font-medium text-gray-900">📦 Docker Tagged</h4>
+                            <p className="text-sm text-gray-800">
+                              This instance is tagged for Docker but installation status is unknown.
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {instance.isSpotInstance && instance.state === 'running' && (
+                  <div className="mt-4 bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+                    <div className="flex items-start space-x-2">
+                      <AlertTriangle className="w-5 h-5 text-yellow-600 mt-0.5" />
                       <div>
-                        <h4 className="font-medium text-blue-900">Docker Services Available</h4>
-                        <p className="text-sm text-blue-800">
-                          This instance has Docker installed. Click the Docker button to view running containers and services.
+                        <h4 className="font-medium text-yellow-900">Spot Instance Notice</h4>
+                        <p className="text-sm text-yellow-800 mt-1">
+                          This is a Spot instance. It cannot be stopped - only terminated. 
+                          AWS may terminate it at any time if capacity is needed or the Spot price exceeds your bid.
                         </p>
                       </div>
                     </div>
-                    <Button
-                      size="sm"
-                      variant="primary"
-                      onClick={() => handleViewDockerServices(instance.id)}
-                      className="bg-blue-600 hover:bg-blue-700"
-                    >
-                      <Activity className="w-4 h-4 mr-1" />
-                      View Services
-                    </Button>
                   </div>
-                </div>
-              )}
+                )}
 
-              {instance.isSpotInstance && instance.state === 'running' && (
-                <div className="mt-4 bg-yellow-50 border border-yellow-200 rounded-lg p-3">
-                  <div className="flex items-start space-x-2">
-                    <AlertTriangle className="w-5 h-5 text-yellow-600 mt-0.5" />
-                    <div>
-                      <h4 className="font-medium text-yellow-900">Spot Instance Notice</h4>
-                      <p className="text-sm text-yellow-800 mt-1">
-                        This is a Spot instance. It cannot be stopped - only terminated. 
-                        AWS may terminate it at any time if capacity is needed or the Spot price exceeds your bid.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Status Checks Information */}
-              {instance.state === 'running' && instance.statusChecks && !instance.statusChecks.isSSHReady && (
-                <div className="mt-4 bg-blue-50 border border-blue-200 rounded-lg p-3">
-                  <div className="flex items-start space-x-2">
-                    <Clock className="w-5 h-5 text-blue-600 mt-0.5" />
-                    <div>
-                      <h4 className="font-medium text-blue-900">Instance Initializing</h4>
-                      <p className="text-sm text-blue-800 mt-1">
-                        The instance is running but still completing initialization. 
-                        Status checks: Instance ({instance.statusChecks.instanceStatus}), System ({instance.statusChecks.systemStatus}).
-                        SSH access will be available once all checks pass.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
-                <div>
-                  <span className="text-gray-600">Instance ID:</span>
-                  <span className="ml-2 font-mono">{instance.id}</span>
-                </div>
-                <div>
-                  <span className="text-gray-600">Private IP:</span>
-                  <span className="ml-2 font-mono">{instance.privateIp}</span>
-                </div>
-                <div>
-                  <span className="text-gray-600">Public IP:</span>
-                  <span className="ml-2 font-mono">{instance.publicIp || 'N/A'}</span>
-                </div>
-                <div>
-                  <span className="text-gray-600">Key Pair:</span>
-                  <span className="ml-2">{instance.keyPairName}</span>
-                </div>
-                <div>
-                  <span className="text-gray-600">Launch Time:</span>
-                  <span className="ml-2">{new Date(instance.launchTime).toLocaleString()}</span>
-                </div>
-                <div>
-                  <span className="text-gray-600">Volumes:</span>
-                  <span className="ml-2">{instance.volumes.length}</span>
-                </div>
-              </div>
-
-              {/* AMI Information */}
-              {instance.ami && (
-                <div className="mt-4">
-                  <h4 className="text-sm font-medium text-gray-900 mb-2">Operating System Details</h4>
-                  <div className="bg-gray-50 p-3 rounded-lg">
-                    <div className="flex items-center space-x-3">
-                      {getOSIcon(instance.ami)}
+                {/* Status Checks Information */}
+                {instance.state === 'running' && instance.statusChecks && !instance.statusChecks.isSSHReady && (
+                  <div className="mt-4 bg-blue-50 border border-blue-200 rounded-lg p-3">
+                    <div className="flex items-start space-x-2">
+                      <Clock className="w-5 h-5 text-blue-600 mt-0.5" />
                       <div>
-                        <div className="font-medium text-gray-900">{instance.ami.name}</div>
-                        <div className="text-sm text-gray-600">
-                          {instance.ami.description} • Default user: <code className="bg-gray-200 px-1 rounded">{instance.ami.defaultUsername}</code>
+                        <h4 className="font-medium text-blue-900">Instance Initializing</h4>
+                        <p className="text-sm text-blue-800 mt-1">
+                          The instance is running but still completing initialization. 
+                          Status checks: Instance ({instance.statusChecks.instanceStatus}), System ({instance.statusChecks.systemStatus}).
+                          SSH access will be available once all checks pass.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                  <div>
+                    <span className="text-gray-600">Instance ID:</span>
+                    <span className="ml-2 font-mono">{instance.id}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-600">Private IP:</span>
+                    <span className="ml-2 font-mono">{instance.privateIp}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-600">Public IP:</span>
+                    <span className="ml-2 font-mono">{instance.publicIp || 'N/A'}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-600">Key Pair:</span>
+                    <span className="ml-2">{instance.keyPairName}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-600">Launch Time:</span>
+                    <span className="ml-2">{new Date(instance.launchTime).toLocaleString()}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-600">Volumes:</span>
+                    <span className="ml-2">{instance.volumes.length}</span>
+                  </div>
+                </div>
+
+                {/* Security Groups Information */}
+                {instance.securityGroups.length > 0 && (
+                  <div className="mt-4">
+                    <h4 className="text-sm font-medium text-gray-900 mb-2 flex items-center">
+                      <Shield className="w-4 h-4 mr-1" />
+                      Security Groups
+                    </h4>
+                    <div className="flex flex-wrap gap-2">
+                      {instance.securityGroups.map((sgId, index) => (
+                        <div key={sgId} className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-1">
+                          <div className="text-sm">
+                            <span className="font-medium text-gray-900">
+                              {instance.securityGroupNames?.[index] || 'Unknown'}
+                            </span>
+                            <span className="text-gray-500 ml-2 font-mono text-xs">({sgId})</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* AMI Information */}
+                {instance.ami && (
+                  <div className="mt-4">
+                    <h4 className="text-sm font-medium text-gray-900 mb-2">Operating System Details</h4>
+                    <div className="bg-gray-50 p-3 rounded-lg">
+                      <div className="flex items-center space-x-3">
+                        {getOSIcon(instance.ami)}
+                        <div>
+                          <div className="font-medium text-gray-900">{instance.ami.name}</div>
+                          <div className="text-sm text-gray-600">
+                            {instance.ami.description} • Default user: <code className="bg-gray-200 px-1 rounded">{instance.ami.defaultUsername}</code>
+                          </div>
                         </div>
                       </div>
                     </div>
                   </div>
-                </div>
-              )}
+                )}
 
-              {instance.volumes.length > 0 && (
-                <div className="mt-4">
-                  <h4 className="text-sm font-medium text-gray-900 mb-2">Attached Volumes</h4>
-                  <div className="space-y-2">
-                    {instance.volumes.map((volume, index) => (
-                      <div key={volume.id} className="flex items-center justify-between bg-gray-50 p-2 rounded">
-                        <span className="text-sm text-gray-700">
-                          {volume.type.toUpperCase()} - {volume.size} GB
-                          {volume.encrypted && <Badge variant="success" size="sm" className="ml-2">Encrypted</Badge>}
-                          {index === 0 && <Badge variant="secondary" size="sm" className="ml-2">Root</Badge>}
-                        </span>
-                        <span className="text-xs text-gray-500 font-mono">{volume.id}</span>
-                      </div>
-                    ))}
+                {instance.volumes.length > 0 && (
+                  <div className="mt-4">
+                    <h4 className="text-sm font-medium text-gray-900 mb-2">Attached Volumes</h4>
+                    <div className="space-y-2">
+                      {instance.volumes.map((volume, index) => (
+                        <div key={volume.id} className="flex items-center justify-between bg-gray-50 p-2 rounded">
+                          <span className="text-sm text-gray-700">
+                            {volume.type.toUpperCase()} - {volume.size} GB
+                            {volume.encrypted && <Badge variant="success" size="sm" className="ml-2">Encrypted</Badge>}
+                            {index === 0 && <Badge variant="secondary" size="sm" className="ml-2">Root</Badge>}
+                          </span>
+                          <span className="text-xs text-gray-500 font-mono">{volume.id}</span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              )}
-            </Card>
-          ))}
+                )}
+              </Card>
+            );
+          })}
         </div>
       )}
 

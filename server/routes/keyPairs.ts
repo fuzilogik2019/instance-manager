@@ -12,6 +12,17 @@ router.get('/', async (req, res) => {
   try {
     console.log('📋 Getting key pairs...');
     
+    // Check if AWS is configured
+    if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+      console.log('⚠️ AWS credentials not configured, using database only');
+      const dbKeyPairs = await db.allAsync('SELECT * FROM key_pairs ORDER BY created_at DESC');
+      const parsedKeyPairs = dbKeyPairs.map((keyPair: any) => ({
+        ...keyPair,
+        createdAt: new Date(keyPair.created_at),
+      }));
+      return res.json(parsedKeyPairs);
+    }
+    
     // Get all key pairs from database first (these may have private keys)
     const dbKeyPairs = await db.allAsync('SELECT * FROM key_pairs ORDER BY created_at DESC');
     console.log(`📊 Found ${dbKeyPairs.length} key pairs in database`);
@@ -88,6 +99,13 @@ router.post('/', async (req, res) => {
     }
     
     console.log(`🔑 Creating new key pair: ${name}`);
+    
+    // Check if AWS is configured
+    if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+      return res.status(401).json({ 
+        error: 'AWS credentials not configured' 
+      });
+    }
     
     // Check if name already exists in database OR AWS
     const existingInDb = await db.getAsync('SELECT id FROM key_pairs WHERE name = ?', [name]);
@@ -181,8 +199,6 @@ router.post('/upload', async (req, res) => {
     
     console.log(`📤 Uploading key pair: ${name} (Private key: ${privateKey ? 'YES' : 'NO'})`);
     
-    // Strategy: Always allow upload to database, handle AWS conflicts gracefully
-    
     // Check if name already exists in database
     const existingInDb = await db.getAsync('SELECT id FROM key_pairs WHERE name = ?', [name]);
     if (existingInDb) {
@@ -212,18 +228,20 @@ router.post('/upload', async (req, res) => {
     
     // Try to import to AWS (but don't fail if it already exists)
     let awsImportSuccess = false;
-    try {
-      const awsService = new AWSService();
-      await awsService.importKeyPair(name, publicKey);
-      awsImportSuccess = true;
-      console.log('✅ Successfully imported key pair to AWS:', name);
-    } catch (awsError) {
-      console.warn('⚠️ AWS import failed (this is OK):', awsError.message);
-      
-      // If it's a duplicate error, that's fine - the key pair already exists in AWS
-      if (awsError.message?.includes('Duplicate') || awsError.message?.includes('already exists')) {
-        console.log('ℹ️ Key pair already exists in AWS, proceeding with database storage');
-        awsImportSuccess = true; // Consider this a success
+    if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
+      try {
+        const awsService = new AWSService();
+        await awsService.importKeyPair(name, publicKey);
+        awsImportSuccess = true;
+        console.log('✅ Successfully imported key pair to AWS:', name);
+      } catch (awsError) {
+        console.warn('⚠️ AWS import failed (this is OK):', awsError.message);
+        
+        // If it's a duplicate error, that's fine - the key pair already exists in AWS
+        if (awsError.message?.includes('Duplicate') || awsError.message?.includes('already exists')) {
+          console.log('ℹ️ Key pair already exists in AWS, proceeding with database storage');
+          awsImportSuccess = true; // Consider this a success
+        }
       }
     }
     
@@ -271,27 +289,32 @@ router.delete('/:id', async (req, res) => {
       console.log(`❌ Key pair not found in database: ${id}`);
       
       // Try to delete from AWS anyway (in case it exists there but not in DB)
-      try {
-        const awsService = new AWSService();
-        await awsService.deleteKeyPair(id);
-        console.log(`✅ Deleted key pair from AWS: ${id}`);
-        return res.json({ message: 'Key pair deleted from AWS' });
-      } catch (awsError) {
-        console.warn(`⚠️ Key pair not found in AWS either: ${awsError.message}`);
-        return res.status(404).json({ error: 'Key pair not found' });
+      if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
+        try {
+          const awsService = new AWSService();
+          await awsService.deleteKeyPair(id);
+          console.log(`✅ Deleted key pair from AWS: ${id}`);
+          return res.json({ message: 'Key pair deleted from AWS' });
+        } catch (awsError) {
+          console.warn(`⚠️ Key pair not found in AWS either: ${awsError.message}`);
+        }
       }
+      
+      return res.status(404).json({ error: 'Key pair not found' });
     }
     
     console.log(`✅ Found key pair in database: ${keyPair.name} (${keyPair.id})`);
     
     // Delete from AWS first (use the name, not the ID)
-    try {
-      const awsService = new AWSService();
-      await awsService.deleteKeyPair(keyPair.name);
-      console.log(`✅ Successfully deleted key pair from AWS: ${keyPair.name}`);
-    } catch (awsError) {
-      console.warn(`⚠️ Failed to delete key pair from AWS: ${awsError.message}`);
-      // Continue with database deletion even if AWS fails
+    if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
+      try {
+        const awsService = new AWSService();
+        await awsService.deleteKeyPair(keyPair.name);
+        console.log(`✅ Successfully deleted key pair from AWS: ${keyPair.name}`);
+      } catch (awsError) {
+        console.warn(`⚠️ Failed to delete key pair from AWS: ${awsError.message}`);
+        // Continue with database deletion even if AWS fails
+      }
     }
     
     // Delete from database

@@ -17,6 +17,22 @@ router.get('/', async (req, res) => {
 
     console.log(`Getting security groups for region: ${region}`);
 
+    // Check if AWS is configured
+    if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+      console.log('⚠️ AWS credentials not configured, using database only');
+      const securityGroups = await db.allAsync(
+        'SELECT * FROM security_groups WHERE region = ? ORDER BY created_at DESC',
+        [region]
+      );
+      
+      const parsedSecurityGroups = securityGroups.map((sg: any) => ({
+        ...sg,
+        rules: JSON.parse(sg.rules || '[]'),
+      }));
+      
+      return res.json(parsedSecurityGroups);
+    }
+
     // Try to get from AWS first, fallback to database
     try {
       const awsService = new AWSService(region as string);
@@ -54,6 +70,13 @@ router.post('/', async (req, res) => {
     
     if (!name || !description || !region) {
       return res.status(400).json({ error: 'Name, description, and region are required' });
+    }
+
+    // Check if AWS is configured
+    if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+      return res.status(401).json({ 
+        error: 'AWS credentials not configured' 
+      });
     }
     
     // Try to create in AWS first
@@ -103,6 +126,13 @@ router.put('/:id', async (req, res) => {
     const { name, description, rules } = req.body;
     
     console.log(`Updating security group: ${id}`);
+
+    // Check if AWS is configured
+    if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+      return res.status(401).json({ 
+        error: 'AWS credentials not configured' 
+      });
+    }
     
     // Try to update in AWS first
     try {
@@ -154,6 +184,13 @@ router.delete('/:id', async (req, res) => {
     const { id } = req.params;
     
     console.log(`Deleting security group: ${id}`);
+
+    // Check if AWS is configured
+    if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+      return res.status(401).json({ 
+        error: 'AWS credentials not configured' 
+      });
+    }
     
     // Try to delete from AWS first
     try {

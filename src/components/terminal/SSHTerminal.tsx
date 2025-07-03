@@ -40,13 +40,13 @@ export default function SSHTerminal({
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
-  const [connectionStatus, setConnectionStatus] =
-    useState<string>("Initializing...");
+  const [connectionStatus, setConnectionStatus] = useState<string>("Initializing...");
 
-  // Use refs to avoid stale closure issues
+  // Use refs to avoid stale closure issues - IMPROVED
   const isConnectedRef = useRef(false);
   const isConnectingRef = useRef(false);
   const socketRef = useRef<Socket | null>(null);
+  const isMinimizedRef = useRef(isMinimized);
 
   // Update refs when state changes
   useEffect(() => {
@@ -62,14 +62,18 @@ export default function SSHTerminal({
   }, [socket.current]);
 
   useEffect(() => {
-    if (!isMinimized) {
-      initializeTerminal();
+    isMinimizedRef.current = isMinimized;
+  }, [isMinimized]);
+
+  // Initialize terminal and connection only once
+  useEffect(() => {
+    if (!socket.current) {
       connectToSSH();
     }
 
     // Handle window resize
     const handleResize = () => {
-      if (fitAddon.current && terminal.current && !isMinimized) {
+      if (fitAddon.current && terminal.current && !isMinimizedRef.current) {
         setTimeout(() => {
           fitAddon.current?.fit();
         }, 100);
@@ -80,16 +84,33 @@ export default function SSHTerminal({
 
     return () => {
       window.removeEventListener("resize", handleResize);
-      if (isMinimized) {
-        // Don't cleanup when minimizing, just hide
-        return;
+      // CRITICAL: Only cleanup when component is truly unmounting (not just minimizing)
+      if (!isMinimizedRef.current) {
+        cleanup();
       }
-      cleanup();
     };
+  }, []);
+
+  // Handle terminal visibility changes - IMPROVED TO PREVENT DISCONNECTION
+  useEffect(() => {
+    if (!isMinimized && !terminal.current) {
+      initializeTerminal();
+    } else if (!isMinimized && terminal.current) {
+      // Re-fit terminal when restored from minimized state
+      setTimeout(() => {
+        if (fitAddon.current) {
+          fitAddon.current.fit();
+          terminal.current?.focus();
+        }
+      }, 100);
+    }
+    // IMPORTANT: Don't cleanup terminal when minimizing - keep connection alive
   }, [isMinimized]);
 
   const initializeTerminal = () => {
-    if (!terminalRef.current || isMinimized) return;
+    if (!terminalRef.current || isMinimized || terminal.current) return;
+
+    console.log(`🖥️ Initializing terminal for ${instanceName}`);
 
     // Create terminal instance with better configuration
     terminal.current = new Terminal({
@@ -185,32 +206,39 @@ export default function SSHTerminal({
   };
 
   const connectToSSH = () => {
-    if (isMinimized) return;
+    if (socket.current) {
+      console.log(`🔄 Socket already exists for ${instanceName}, reusing connection`);
+      return;
+    }
     
+    console.log(`🔌 Creating new SSH connection for ${instanceName}`);
     setIsConnecting(true);
     isConnectingRef.current = true;
     setConnectionStatus("Connecting to server...");
 
-    if (terminal.current) {
-      terminal.current.writeln(
-        "\x1b[1;36m🔌 Connecting to SSH service...\x1b[0m"
-      );
-    }
-
-    // Create socket connection
+    // Create socket connection with persistent configuration - IMPROVED
     socket.current = io("http://localhost:3001", {
       transports: ["websocket"],
       timeout: 20000,
-      forceNew: true,
-      reconnection: false,
+      forceNew: false, // Allow reusing connections
+      reconnection: true, // Enable automatic reconnection
+      reconnectionAttempts: 10, // Increased attempts
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      maxReconnectionAttempts: 10,
+      autoConnect: true,
+      // CRITICAL: Keep connection alive during minimize
+      upgrade: true,
+      rememberUpgrade: true,
     });
 
     socketRef.current = socket.current;
 
     socket.current.on("connect", () => {
+      console.log(`✅ Socket connected for ${instanceName}`);
       setConnectionStatus("Establishing SSH connection...");
 
-      if (terminal.current) {
+      if (terminal.current && !isMinimizedRef.current) {
         terminal.current.writeln(
           "\x1b[1;32m✅ Connected to SSH service\x1b[0m"
         );
@@ -227,13 +255,14 @@ export default function SSHTerminal({
     });
 
     socket.current.on("ssh:connected", (data) => {
+      console.log(`🔐 SSH authenticated for ${instanceName}`);
       setIsConnected(true);
       isConnectedRef.current = true;
       setIsConnecting(false);
       isConnectingRef.current = false;
       setConnectionStatus("Connected");
 
-      if (terminal.current) {
+      if (terminal.current && !isMinimizedRef.current) {
         terminal.current.writeln(
           `\x1b[1;32m✅ Connected to ${data.username}@${data.host}\x1b[0m`
         );
@@ -251,20 +280,30 @@ export default function SSHTerminal({
       }
     });
 
+    socket.current.on("ssh:shell-ready", (data) => {
+      console.log(`🐚 Shell ready for ${instanceName}`);
+      if (terminal.current && !isMinimizedRef.current) {
+        terminal.current.writeln(
+          "\x1b[1;32m🐚 Shell session established\x1b[0m"
+        );
+      }
+    });
+
     socket.current.on("ssh:data", (data) => {
-      if (terminal.current) {
+      if (terminal.current && !isMinimizedRef.current) {
         terminal.current.write(data);
       }
     });
 
     socket.current.on("ssh:error", (error) => {
+      console.error(`❌ SSH error for ${instanceName}:`, error);
       setIsConnecting(false);
       isConnectingRef.current = false;
       setIsConnected(false);
       isConnectedRef.current = false;
       setConnectionStatus(`Error: ${error.message}`);
 
-      if (terminal.current) {
+      if (terminal.current && !isMinimizedRef.current) {
         terminal.current.writeln(
           `\x1b[1;31m❌ Connection failed: ${error.message}\x1b[0m`
         );
@@ -272,31 +311,70 @@ export default function SSHTerminal({
     });
 
     socket.current.on("ssh:disconnected", (data) => {
+      console.log(`🔌 SSH disconnected for ${instanceName}:`, data);
       setIsConnected(false);
       isConnectedRef.current = false;
       setConnectionStatus("Disconnected");
 
-      if (terminal.current) {
+      if (terminal.current && !isMinimizedRef.current) {
         terminal.current.writeln(`\x1b[1;33m🔌 ${data.message}\x1b[0m`);
       }
     });
 
-    socket.current.on("disconnect", () => {
+    socket.current.on("disconnect", (reason) => {
+      console.log(`🔌 Socket disconnected for ${instanceName}:`, reason);
       setIsConnected(false);
       isConnectedRef.current = false;
       setConnectionStatus("Disconnected");
-      socketRef.current = null;
+      
+      // Only show disconnection message if not minimized
+      if (terminal.current && !isMinimizedRef.current) {
+        terminal.current.writeln(`\x1b[1;33m🔌 Connection lost: ${reason}\x1b[0m`);
+      }
     });
 
     socket.current.on("connect_error", (error) => {
+      console.error(`🔌 Socket connection error for ${instanceName}:`, error);
       setIsConnecting(false);
       isConnectingRef.current = false;
       setConnectionStatus("Connection failed");
-      socketRef.current = null;
+    });
+
+    socket.current.on("reconnect", (attemptNumber) => {
+      console.log(`🔄 Socket reconnected for ${instanceName} (attempt ${attemptNumber})`);
+      setConnectionStatus("Reconnected");
+      setIsConnected(true);
+      isConnectedRef.current = true;
+      
+      // Re-establish SSH connection
+      socket.current?.emit("ssh:connect", {
+        instanceId,
+        keyPairName,
+        username: "ubuntu",
+      });
+    });
+
+    socket.current.on("reconnect_attempt", (attemptNumber) => {
+      console.log(`🔄 Reconnection attempt ${attemptNumber} for ${instanceName}`);
+      setConnectionStatus(`Reconnecting... (${attemptNumber})`);
+    });
+
+    socket.current.on("reconnect_error", (error) => {
+      console.error(`🔄 Reconnection error for ${instanceName}:`, error);
+      setConnectionStatus("Reconnection failed");
+    });
+
+    socket.current.on("reconnect_failed", () => {
+      console.error(`🔄 Reconnection failed for ${instanceName}`);
+      setConnectionStatus("Connection lost");
+      setIsConnected(false);
+      isConnectedRef.current = false;
     });
   };
 
   const cleanup = () => {
+    console.log(`🧹 Cleaning up terminal for ${instanceName}`);
+
     if (socket.current) {
       socket.current.disconnect();
       socket.current = null;
@@ -306,6 +384,13 @@ export default function SSHTerminal({
     if (terminal.current) {
       terminal.current.dispose();
       terminal.current = null;
+    }
+  };
+
+  const handleMinimize = () => {
+    console.log(`📦 Minimizing terminal for ${instanceName} (keeping connection alive)`);
+    if (onMinimize) {
+      onMinimize();
     }
   };
 
@@ -370,9 +455,9 @@ export default function SSHTerminal({
             <Button
               size="sm"
               variant="secondary"
-              onClick={onMinimize}
+              onClick={handleMinimize}
               className="p-1 bg-gray-700 hover:bg-gray-600 border-gray-600"
-              title="Minimize"
+              title="Minimize (keep connection alive)"
             >
               <Minimize2 className="w-4 h-4" />
             </Button>
@@ -429,6 +514,14 @@ export default function SSHTerminal({
             </div>
           </div>
         )}
+
+        {/* Connection status indicator */}
+        {isConnected && (
+          <div className="absolute top-4 right-4 bg-green-600 bg-opacity-90 text-white px-3 py-1 rounded-lg text-xs flex items-center">
+            <span className="w-2 h-2 bg-green-300 rounded-full mr-2 animate-pulse"></span>
+            SSH Connected
+          </div>
+        )}
       </div>
 
       {/* Terminal Footer */}
@@ -444,13 +537,13 @@ export default function SSHTerminal({
               <>
                 <span className="text-green-600">● Connected</span>
                 <span>•</span>
-                <span>Type commands normally</span>
+                <span>Persistent connection</span>
               </>
             ) : (
               <>
                 <span className="text-red-600">● Disconnected</span>
                 <span>•</span>
-                <span>Check connection status</span>
+                <span>Attempting reconnection...</span>
               </>
             )}
           </div>
