@@ -39,6 +39,13 @@ class SSHService {
         this.handleSSHResize(socket, data);
       });
 
+      // Soporte para keepalive desde el frontend
+      socket.on('ssh:keepalive', (data) => {
+        // Simplemente registrar el ping y no cerrar la conexión
+        console.log(`🔄 [KEEPALIVE] Ping recibido para instancia ${data.instanceId} desde socket ${socket.id}`);
+        socket.emit('ssh:keepalive:ack', { success: true, instanceId: data.instanceId, timestamp: new Date().toISOString() });
+      });
+
       socket.on('disconnect', () => {
         console.log(`🔌 SSH Terminal client disconnected: ${socket.id}`);
         this.handleDisconnect(socket);

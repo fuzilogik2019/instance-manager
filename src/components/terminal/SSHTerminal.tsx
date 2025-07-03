@@ -40,13 +40,17 @@ export default function SSHTerminal({
   const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
-  const [connectionStatus, setConnectionStatus] = useState<string>("Initializing...");
+  const [connectionStatus, setConnectionStatus] =
+    useState<string>("Initializing...");
 
   // Use refs to avoid stale closure issues - IMPROVED
   const isConnectedRef = useRef(false);
   const isConnectingRef = useRef(false);
   const socketRef = useRef<Socket | null>(null);
   const isMinimizedRef = useRef(isMinimized);
+
+  // Keepalive interval ref
+  const keepAliveInterval = useRef<NodeJS.Timeout | null>(null);
 
   // Update refs when state changes
   useEffect(() => {
@@ -65,7 +69,7 @@ export default function SSHTerminal({
     isMinimizedRef.current = isMinimized;
   }, [isMinimized]);
 
-  // Initialize terminal and connection only once
+  // Initialize terminal and connection only once (solo al montar/desmontar)
   useEffect(() => {
     if (!socket.current) {
       connectToSSH();
@@ -82,14 +86,12 @@ export default function SSHTerminal({
 
     window.addEventListener("resize", handleResize);
 
+    // Cleanup SOLO al desmontar (no al minimizar)
     return () => {
       window.removeEventListener("resize", handleResize);
-      // CRITICAL: Only cleanup when component is truly unmounting (not just minimizing)
-      if (!isMinimizedRef.current) {
-        cleanup();
-      }
+      cleanup();
     };
-  }, []);
+  }, []); // Solo al montar/desmontar
 
   // Handle terminal visibility changes - IMPROVED TO PREVENT DISCONNECTION
   useEffect(() => {
@@ -106,6 +108,44 @@ export default function SSHTerminal({
     }
     // IMPORTANT: Don't cleanup terminal when minimizing - keep connection alive
   }, [isMinimized]);
+
+  // Keepalive: enviar ping cada 30s si está minimizada y conectado
+  useEffect(() => {
+    if (isMinimized && isConnected && socket.current) {
+      if (!keepAliveInterval.current) {
+        keepAliveInterval.current = setInterval(() => {
+          if (socket.current && socket.current.connected) {
+            console.log(
+              "[KEEPALIVE] Enviando ping ssh:keepalive para instancia",
+              instanceId
+            );
+            socket.current.emit("ssh:keepalive", { instanceId });
+          }
+        }, 30000); // 30 segundos
+      }
+      // Escuchar ACK del backend
+      const handleAck = (data: any) => {
+        console.log("[KEEPALIVE] ACK recibido del backend:", data);
+      };
+      socket.current.on("ssh:keepalive:ack", handleAck);
+      // Limpiar listener al desmontar o cambiar
+      return () => {
+        if (socket.current) {
+          socket.current.off("ssh:keepalive:ack", handleAck);
+        }
+        if (keepAliveInterval.current) {
+          clearInterval(keepAliveInterval.current);
+          keepAliveInterval.current = null;
+        }
+      };
+    } else {
+      // Si no está minimizada o no conectado, limpiar el intervalo
+      if (keepAliveInterval.current) {
+        clearInterval(keepAliveInterval.current);
+        keepAliveInterval.current = null;
+      }
+    }
+  }, [isMinimized, isConnected]);
 
   const initializeTerminal = () => {
     if (!terminalRef.current || isMinimized || terminal.current) return;
@@ -207,10 +247,12 @@ export default function SSHTerminal({
 
   const connectToSSH = () => {
     if (socket.current) {
-      console.log(`🔄 Socket already exists for ${instanceName}, reusing connection`);
+      console.log(
+        `🔄 Socket already exists for ${instanceName}, reusing connection`
+      );
       return;
     }
-    
+
     console.log(`🔌 Creating new SSH connection for ${instanceName}`);
     setIsConnecting(true);
     isConnectingRef.current = true;
@@ -225,7 +267,6 @@ export default function SSHTerminal({
       reconnectionAttempts: 10, // Increased attempts
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
-      maxReconnectionAttempts: 10,
       autoConnect: true,
       // CRITICAL: Keep connection alive during minimize
       upgrade: true,
@@ -326,10 +367,12 @@ export default function SSHTerminal({
       setIsConnected(false);
       isConnectedRef.current = false;
       setConnectionStatus("Disconnected");
-      
+
       // Only show disconnection message if not minimized
       if (terminal.current && !isMinimizedRef.current) {
-        terminal.current.writeln(`\x1b[1;33m🔌 Connection lost: ${reason}\x1b[0m`);
+        terminal.current.writeln(
+          `\x1b[1;33m🔌 Connection lost: ${reason}\x1b[0m`
+        );
       }
     });
 
@@ -341,11 +384,13 @@ export default function SSHTerminal({
     });
 
     socket.current.on("reconnect", (attemptNumber) => {
-      console.log(`🔄 Socket reconnected for ${instanceName} (attempt ${attemptNumber})`);
+      console.log(
+        `🔄 Socket reconnected for ${instanceName} (attempt ${attemptNumber})`
+      );
       setConnectionStatus("Reconnected");
       setIsConnected(true);
       isConnectedRef.current = true;
-      
+
       // Re-establish SSH connection
       socket.current?.emit("ssh:connect", {
         instanceId,
@@ -355,7 +400,9 @@ export default function SSHTerminal({
     });
 
     socket.current.on("reconnect_attempt", (attemptNumber) => {
-      console.log(`🔄 Reconnection attempt ${attemptNumber} for ${instanceName}`);
+      console.log(
+        `🔄 Reconnection attempt ${attemptNumber} for ${instanceName}`
+      );
       setConnectionStatus(`Reconnecting... (${attemptNumber})`);
     });
 
@@ -385,10 +432,17 @@ export default function SSHTerminal({
       terminal.current.dispose();
       terminal.current = null;
     }
+
+    if (keepAliveInterval.current) {
+      clearInterval(keepAliveInterval.current);
+      keepAliveInterval.current = null;
+    }
   };
 
   const handleMinimize = () => {
-    console.log(`📦 Minimizing terminal for ${instanceName} (keeping connection alive)`);
+    console.log(
+      `📦 Minimizing terminal for ${instanceName} (keeping connection alive)`
+    );
     if (onMinimize) {
       onMinimize();
     }
@@ -427,16 +481,24 @@ export default function SSHTerminal({
     return <WifiOff className="w-4 h-4 text-red-400" />;
   };
 
-  // Don't render if minimized
-  if (isMinimized) {
-    return null;
-  }
+  // No desmontar el componente al minimizar, solo ocultarlo visualmente
+  const terminalVisibilityStyle = isMinimized
+    ? {
+        opacity: 0,
+        pointerEvents: "none" as React.CSSProperties["pointerEvents"],
+        position: "absolute" as const,
+        zIndex: -1,
+        height: "0px",
+        width: "0px",
+      }
+    : {};
 
   return (
     <div
       className={`fixed bg-white rounded-lg shadow-2xl border border-gray-200 z-50 ${
         isMaximized ? "inset-4" : "bottom-4 right-4 w-[900px] h-[650px]"
       }`}
+      style={terminalVisibilityStyle}
     >
       {/* Terminal Header */}
       <div className="flex items-center justify-between px-4 py-2 bg-gray-800 text-white rounded-t-lg">

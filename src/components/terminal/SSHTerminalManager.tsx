@@ -1,7 +1,7 @@
-import React, { useState, useCallback } from 'react';
-import { Terminal, Minimize2, Maximize2 } from 'lucide-react';
-import SSHTerminal from './SSHTerminal';
-import Button from '../ui/Button';
+import React, { useState, useCallback } from "react";
+import { Terminal, Minimize2, Maximize2 } from "lucide-react";
+import SSHTerminal from "./SSHTerminal";
+import Button from "../ui/Button";
 
 interface TerminalSession {
   id: string;
@@ -16,46 +16,58 @@ export default function SSHTerminalManager() {
   const [terminals, setTerminals] = useState<TerminalSession[]>([]);
   const [allMinimized, setAllMinimized] = useState(false);
 
-  const openTerminal = useCallback((instanceId: string, instanceName: string, keyPairName: string, host: string) => {
-    const existingTerminal = terminals.find(t => t.instanceId === instanceId);
-    
-    if (existingTerminal) {
-      // Si ya existe, lo desminiaturizamos
-      setTerminals(prev => prev.map(t => 
-        t.instanceId === instanceId 
-          ? { ...t, isMinimized: false }
-          : t
-      ));
-    } else {
-      // Crear nueva terminal
-      const newTerminal: TerminalSession = {
-        id: `terminal-${instanceId}-${Date.now()}`,
-        instanceId,
-        instanceName,
-        keyPairName,
-        host,
-        isMinimized: false,
-      };
-      setTerminals(prev => [...prev, newTerminal]);
-    }
-  }, [terminals]);
+  const openTerminal = useCallback(
+    (
+      instanceId: string,
+      instanceName: string,
+      keyPairName: string,
+      host: string
+    ) => {
+      const existingTerminal = terminals.find(
+        (t) => t.instanceId === instanceId
+      );
+
+      if (existingTerminal) {
+        // Si ya existe, lo desminiaturizamos
+        setTerminals((prev) =>
+          prev.map((t) =>
+            t.instanceId === instanceId ? { ...t, isMinimized: false } : t
+          )
+        );
+      } else {
+        // Crear nueva terminal
+        const newTerminal: TerminalSession = {
+          id: `terminal-${instanceId}`,
+          instanceId,
+          instanceName,
+          keyPairName,
+          host,
+          isMinimized: false,
+        };
+        setTerminals((prev) => [...prev, newTerminal]);
+      }
+    },
+    [terminals]
+  );
 
   const closeTerminal = useCallback((instanceId: string) => {
-    setTerminals(prev => prev.filter(t => t.instanceId !== instanceId));
+    setTerminals((prev) => prev.filter((t) => t.instanceId !== instanceId));
   }, []);
 
   const toggleMinimize = useCallback((instanceId: string) => {
-    setTerminals(prev => prev.map(t => 
-      t.instanceId === instanceId 
-        ? { ...t, isMinimized: !t.isMinimized }
-        : t
-    ));
+    setTerminals((prev) =>
+      prev.map((t) =>
+        t.instanceId === instanceId ? { ...t, isMinimized: !t.isMinimized } : t
+      )
+    );
   }, []);
 
   const toggleAllMinimized = useCallback(() => {
     const newMinimizedState = !allMinimized;
     setAllMinimized(newMinimizedState);
-    setTerminals(prev => prev.map(t => ({ ...t, isMinimized: newMinimizedState })));
+    setTerminals((prev) =>
+      prev.map((t) => ({ ...t, isMinimized: newMinimizedState }))
+    );
   }, [allMinimized]);
 
   // Exponer función global para abrir terminales
@@ -66,22 +78,22 @@ export default function SSHTerminalManager() {
     };
   }, [openTerminal]);
 
-  const activeTerminals = terminals.filter(t => !t.isMinimized);
-  const minimizedTerminals = terminals.filter(t => t.isMinimized);
+  const activeTerminals = terminals.filter((t) => !t.isMinimized);
+  const minimizedTerminals = terminals.filter((t) => t.isMinimized);
 
   return (
     <>
-      {/* Terminales activas */}
-      {activeTerminals.map((terminal) => (
+      {/* Renderizar todas las terminales abiertas, activas o minimizadas */}
+      {terminals.map((terminal) => (
         <SSHTerminal
-          key={terminal.id}
+          key={terminal.instanceId}
           instanceId={terminal.instanceId}
           instanceName={terminal.instanceName}
           keyPairName={terminal.keyPairName}
           host={terminal.host}
           onClose={() => closeTerminal(terminal.instanceId)}
           onMinimize={() => toggleMinimize(terminal.instanceId)}
-          isMinimized={false}
+          isMinimized={terminal.isMinimized}
         />
       ))}
 
@@ -95,7 +107,7 @@ export default function SSHTerminalManager() {
                 SSH Terminals ({minimizedTerminals.length})
               </span>
             </div>
-            
+
             <div className="flex items-center space-x-2">
               <Button
                 size="sm"
@@ -103,29 +115,36 @@ export default function SSHTerminalManager() {
                 onClick={toggleAllMinimized}
                 className="bg-gray-700 hover:bg-gray-600 text-white border-gray-600"
               >
-                {allMinimized ? <Maximize2 className="w-4 h-4" /> : <Minimize2 className="w-4 h-4" />}
+                {allMinimized ? (
+                  <Maximize2 className="w-4 h-4" />
+                ) : (
+                  <Minimize2 className="w-4 h-4" />
+                )}
               </Button>
             </div>
           </div>
-          
+
           <div className="flex items-center space-x-2 px-4 pb-2 overflow-x-auto">
             {minimizedTerminals.map((terminal) => (
               <button
-                key={terminal.id}
+                key={terminal.instanceId}
                 onClick={() => toggleMinimize(terminal.instanceId)}
                 className="flex items-center space-x-2 bg-gray-700 hover:bg-gray-600 text-white px-3 py-1 rounded text-sm whitespace-nowrap transition-colors"
               >
                 <Terminal className="w-3 h-3" />
                 <span>{terminal.instanceName}</span>
-                <button
+                <span
+                  role="button"
+                  tabIndex={0}
                   onClick={(e) => {
                     e.stopPropagation();
                     closeTerminal(terminal.instanceId);
                   }}
-                  className="text-gray-400 hover:text-white ml-1"
+                  className="text-gray-400 hover:text-white ml-1 cursor-pointer"
+                  title="Cerrar terminal"
                 >
                   ×
-                </button>
+                </span>
               </button>
             ))}
           </div>
