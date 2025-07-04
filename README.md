@@ -1,3 +1,9 @@
+![Test](https://github.com/user-attachments/assets/c6dc6a99-0f6c-4ad1-81f2-dad994761ff1)
+![Test2](https://github.com/user-attachments/assets/c30b61dd-1d80-4f68-9ccc-2280cdb4248c)
+![Test3](https://github.com/user-attachments/assets/996f09e7-6031-4300-b8cc-096871237bd9)
+![Test4](https://github.com/user-attachments/assets/4b256b5d-318f-4d41-a63e-667b27a61660)
+![Test5](https://github.com/user-attachments/assets/bbd67d80-560e-4775-b6fd-cd299ca00a56)
+
 # Instance Manager AWS EC2
 
 Una aplicación web moderna para gestionar instancias EC2 de AWS con un frontend en React y backend en Node.js.
